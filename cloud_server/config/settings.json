@@ -1,0 +1,49 @@
+{
+  "app": {
+    "name": "medical-display-cloud-server",
+    "host": "0.0.0.0",
+    "port": 8080,
+    "api_prefix": "/api/v1",
+    "database_path": "data/cloud_server.db",
+    "log_level": "info"
+  },
+  "security": {
+    "allow_anonymous": true,
+    "api_token": "medical-display-dev-token"
+  },
+  "storage": {
+    "models_dir": "models",
+    "artifacts_dir": "models",
+    "uploads_dir": "data/uploads"
+  },
+  "mqtt": {
+    "enabled": false,
+    "host": "localhost",
+    "port": 1883,
+    "username": "",
+    "password": "",
+    "client_id": "medical-display-cloud-server",
+    "topic_prefix": "medical-display/cloud",
+    "keepalive": 30
+  },
+  "ota": {
+    "default_channel": "stable",
+    "seed_releases": [
+      {
+        "release_id": "ota-2.1.0-stable",
+        "version": "2.1.0",
+        "base_version": "2.0.0",
+        "channel": "stable",
+        "file_name": "medical_display_firmware_2.1.0.bin",
+        "delta_file_name": "medical_display_firmware_2.1.0.delta.bin",
+        "checksum": "sha256:placeholder-ota-210",
+        "signature": "demo-signature",
+        "install_path": "/opt/medical-display/firmware",
+        "changelog": "修复校准任务调度并增强 OTA 回滚提示。",
+        "is_mandatory": false,
+        "is_security_update": true,
+        "published_at": "2026-05-05T09:00:00Z"
+      }
+    ]
+  }
+}

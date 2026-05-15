@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Threads)
+
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/MedicalDisplaySDKTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/MedicalDisplaySDKTargets.cmake")
+endif()
+
+set(MedicalDisplaySDK_VERSION "@PROJECT_VERSION@")

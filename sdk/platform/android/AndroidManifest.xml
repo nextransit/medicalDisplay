@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.medicaldisplay">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <permission
+        android:name="com.medicaldisplay.permission.BIND_MEDICAL_DISPLAY_SERVICE"
+        android:protectionLevel="signature" />
+
+    <application>
+        <service
+            android:name=".MedicalDisplayService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="com.medicaldisplay.permission.BIND_MEDICAL_DISPLAY_SERVICE" />
+    </application>
+</manifest>

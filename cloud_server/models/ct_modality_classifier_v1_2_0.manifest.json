@@ -1,0 +1,21 @@
+{
+  "model_id": "ct_modality_classifier",
+  "version": "1.2.0",
+  "base_version": "1.1.0",
+  "modality": "CT",
+  "checksum": "sha256:placeholder-ct-120",
+  "file_name": "ct_modality_classifier_v1_2_0.onnx",
+  "min_firmware_version": "2.0.0",
+  "target_device_models": [
+    "MD-6MP-Pro",
+    "MD-4K-Surgery"
+  ],
+  "release_notes": "增强 CT 软组织与骨窗识别稳定性，优化低剂量扫描场景。",
+  "tags": [
+    "diagnosis",
+    "edge",
+    "federated-ready"
+  ],
+  "is_mandatory": false,
+  "published_at": "2026-05-01T10:00:00Z"
+}

@@ -1,0 +1,108 @@
+cmake_minimum_required(VERSION 3.20)
+
+if(APPLE AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    if(EXISTS "/opt/homebrew/opt/gcc/bin/gcc-15" AND EXISTS "/opt/homebrew/opt/gcc/bin/g++-15")
+        set(CMAKE_C_COMPILER "/opt/homebrew/opt/gcc/bin/gcc-15" CACHE FILEPATH "C compiler" FORCE)
+        set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/gcc/bin/g++-15" CACHE FILEPATH "CXX compiler" FORCE)
+    elseif(EXISTS "/opt/homebrew/opt/llvm/bin/clang" AND EXISTS "/opt/homebrew/opt/llvm/bin/clang++")
+        set(CMAKE_C_COMPILER "/opt/homebrew/opt/llvm/bin/clang" CACHE FILEPATH "C compiler" FORCE)
+        set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++" CACHE FILEPATH "CXX compiler" FORCE)
+    endif()
+endif()
+
+if(APPLE AND NOT CMAKE_OSX_SYSROOT)
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE MEDICALDISPLAY_MACOS_SDK
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(MEDICALDISPLAY_MACOS_SDK)
+        set(CMAKE_OSX_SYSROOT "${MEDICALDISPLAY_MACOS_SDK}" CACHE PATH "macOS SDK" FORCE)
+    endif()
+endif()
+
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    project(MedicalDisplayTests LANGUAGES C CXX)
+    enable_testing()
+endif()
+
+get_filename_component(MEDICALDISPLAY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+
+find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(GTest QUIET)
+
+if(NOT GTest_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+    )
+    FetchContent_MakeAvailable(googletest)
+endif()
+
+add_library(medicaldisplay_test_support STATIC
+    support/display_linux_stubs.cpp
+    support/drm_mock.cpp
+    ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/src/ai_engine_impl.cpp
+    ${MEDICALDISPLAY_ROOT}/sdk/display_engine/src/display_engine_impl.cpp
+    ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_reader.cpp
+    ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_gsdf.c
+    ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/src/drm_display.cpp
+)
+
+target_include_directories(medicaldisplay_test_support
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/support
+        ${CMAKE_CURRENT_SOURCE_DIR}/support/drm
+        ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/include
+        ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
+        ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
+        ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
+)
+
+target_compile_features(medicaldisplay_test_support PUBLIC cxx_std_17)
+target_compile_definitions(medicaldisplay_test_support PUBLIC MEDICALDISPLAY_FORCE_LINUX_DISPLAY)
+
+target_link_libraries(medicaldisplay_test_support
+    PUBLIC
+        Threads::Threads
+        ZLIB::ZLIB
+)
+
+if(APPLE)
+    target_link_libraries(medicaldisplay_test_support PUBLIC c++)
+endif()
+
+function(add_medicaldisplay_gtest target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name}
+        PRIVATE
+            medicaldisplay_test_support
+            GTest::gtest_main
+    )
+    if(APPLE)
+        target_link_libraries(${target_name} PRIVATE c++)
+    endif()
+    target_compile_features(${target_name} PRIVATE cxx_std_17)
+    gtest_discover_tests(${target_name})
+endfunction()
+
+include(GoogleTest)
+
+add_medicaldisplay_gtest(test_suite
+    test_suite.cpp
+)
+
+add_medicaldisplay_gtest(test_display_pipeline
+    test_display_pipeline.cpp
+)
+
+add_medicaldisplay_gtest(test_drm
+    test_drm.cpp
+)
+
+add_medicaldisplay_gtest(test_gsdf
+    test_gsdf.cpp
+)

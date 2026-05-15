@@ -1,0 +1,21 @@
+{
+  "model_id": "federated_display_optimizer",
+  "version": "2.0.0",
+  "base_version": "1.9.0",
+  "modality": "POLICY",
+  "checksum": "sha256:placeholder-fed-200",
+  "file_name": "federated_display_optimizer_v2_0_0.bin",
+  "min_firmware_version": "2.0.0",
+  "target_device_models": [
+    "MD-6MP-Pro",
+    "MD-4K-Surgery",
+    "MD-8MP-Diagnostic"
+  ],
+  "release_notes": "用于联邦学习基线模型的显示策略优化器样例。",
+  "tags": [
+    "federated",
+    "display-policy"
+  ],
+  "is_mandatory": false,
+  "published_at": "2026-05-04T11:15:00Z"
+}

@@ -1,0 +1,120 @@
+#ifndef TESTS_SUPPORT_MODALITY_STRATEGY_H
+#define TESTS_SUPPORT_MODALITY_STRATEGY_H
+
+#include "ai_engine.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <list>
+#include <memory>
+#include <unordered_map>
+
+namespace medical_display {
+
+float* preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h);
+float* preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h);
+void normalize_tensor(float* data, int size, float mean, float std);
+uint64_t hash_metadata_key(const char* modality, const char* series, int body_part);
+
+class ModelRunner {
+public:
+    static std::unique_ptr<ModelRunner> Create(const AIEngineConfig& config) {
+        return std::unique_ptr<ModelRunner>(new ModelRunner(config));
+    }
+
+    int Run(const float* input_buffer, float* scores, int score_count) {
+        if (!input_buffer || !scores || score_count <= 0) {
+            return -1;
+        }
+
+        std::fill(scores, scores + score_count, 0.01f);
+
+        int sample_count = config_.input_width * config_.input_height;
+        if (sample_count <= 0) {
+            sample_count = 1;
+        }
+
+        float mean = 0.0f;
+        for (int i = 0; i < sample_count; ++i) {
+            mean += input_buffer[i];
+        }
+        mean /= static_cast<float>(sample_count);
+
+        int preferred = MODALITY_CT;
+        if (mean > 1.0f && MODALITY_MR < score_count) {
+            preferred = MODALITY_MR;
+        } else if (mean < -0.5f && MODALITY_DX < score_count) {
+            preferred = MODALITY_DX;
+        } else if (MODALITY_US < score_count && mean > 0.4f && mean <= 1.0f) {
+            preferred = MODALITY_US;
+        }
+
+        scores[preferred] = 0.92f;
+        if (MODALITY_CT < score_count && preferred != MODALITY_CT) {
+            scores[MODALITY_CT] = 0.45f;
+        }
+        if (MODALITY_MR < score_count && preferred != MODALITY_MR) {
+            scores[MODALITY_MR] = 0.37f;
+        }
+        if (MODALITY_US < score_count && preferred != MODALITY_US) {
+            scores[MODALITY_US] = 0.24f;
+        }
+
+        return 0;
+    }
+
+private:
+    explicit ModelRunner(const AIEngineConfig& config) : config_(config) {}
+
+    AIEngineConfig config_;
+};
+
+class MetadataCache {
+public:
+    explicit MetadataCache(size_t capacity) : capacity_(capacity) {}
+
+    bool Get(uint64_t key, AIRecognitionResult* result) {
+        auto it = cache_.find(key);
+        if (it == cache_.end()) {
+            return false;
+        }
+
+        order_.erase(it->second.second);
+        order_.push_front(key);
+        it->second.second = order_.begin();
+
+        if (result) {
+            *result = it->second.first;
+        }
+        return true;
+    }
+
+    void Put(uint64_t key, const AIRecognitionResult* result) {
+        if (!result || capacity_ == 0) {
+            return;
+        }
+
+        auto existing = cache_.find(key);
+        if (existing != cache_.end()) {
+            order_.erase(existing->second.second);
+            cache_.erase(existing);
+        } else if (cache_.size() >= capacity_) {
+            uint64_t stale_key = order_.back();
+            order_.pop_back();
+            cache_.erase(stale_key);
+        }
+
+        order_.push_front(key);
+        cache_[key] = {*result, order_.begin()};
+    }
+
+private:
+    size_t capacity_;
+    std::list<uint64_t> order_;
+    std::unordered_map<uint64_t, std::pair<AIRecognitionResult, std::list<uint64_t>::iterator>> cache_;
+};
+
+}  // namespace medical_display
+
+#endif

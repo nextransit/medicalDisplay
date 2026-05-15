@@ -1,0 +1,7 @@
+{
+  "version": "1.1.0",
+  "package": "ota_package_v1.1.0.bin",
+  "checksum": "6ab9b29a",
+  "mandatory": false,
+  "notes": "Demo OTA package with staged checksum verification"
+}

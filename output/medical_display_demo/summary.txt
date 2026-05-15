@@ -1,0 +1,8 @@
+medical_display_demo
+generated_at=2026-05-15 12:57:39
+frames=2
+modality=CT
+bytes_written=32832
+inference_avg_ms=0.0015
+render_avg_ms=0.926
+fps=484.731
