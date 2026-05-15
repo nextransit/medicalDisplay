@@ -76,6 +76,18 @@ if(BUILD_EXAMPLES)
 endif()
 
 # ============================================================================
+# Smoke Tests (Example Binaries as Tests)
+# ============================================================================
+# Note: These tests depend on example binaries being built first
+# Run with: ctest --test-dir build -R Smoke
+
+if(BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/linux")
+    add_test(NAME Smoke_medical_display_demo COMMAND medical_display_demo --frames 2 --width 64 --height 64)
+    add_test(NAME Smoke_gsdf_calibration_demo COMMAND gsdf_calibration_demo)
+    add_test(NAME Smoke_cloud_demo COMMAND cloud_demo)
+endif()
+
+# ============================================================================
 # Tests
 # ============================================================================
 
