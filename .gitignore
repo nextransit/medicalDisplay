@@ -1,0 +1,36 @@
+# Build directories
+build-*/
+build/
+build-dev/
+build-cloud-check/
+build-llvm/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+CMakeScripts/
+CMakePresets.json
+
+# Generated configs
+*.cmake
+!MedicalDisplaySDKConfig.cmake.in
+!*.cmake.in
+
+# Output
+output/
+
+# Testing
+Testing/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+*.log
