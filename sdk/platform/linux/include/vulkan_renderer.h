@@ -63,6 +63,52 @@ int vulkan_render(void* renderer, uint32_t image_index);
  */
 int vulkan_wait_frame(void* renderer);
 
+/**
+ * @brief Create compute pipeline for bit depth conversion
+ * @param renderer Renderer handle
+ * @param comp_shader Compute shader bytecode
+ * @param comp_size Compute shader size in bytes
+ * @return 0 on success
+ */
+int vulkan_create_compute_pipeline(void* renderer, const uint32_t* comp_shader, size_t comp_size);
+
+/**
+ * @brief Upload 16-bit texture data
+ * @param renderer Renderer handle
+ * @param data 16-bit pixel data
+ * @param width Width in pixels
+ * @param height Height in pixels
+ * @return 0 on success
+ */
+int vulkan_upload_16bit_texture(void* renderer, const uint16_t* data, uint32_t width, uint32_t height);
+
+/**
+ * @brief Dispatch compute shader for bit depth conversion
+ * @param renderer Renderer handle
+ * @param width Width in pixels
+ * @param height Height in pixels
+ * @param windowCenter Window center value
+ * @param windowWidth Window width value
+ * @param bitsStored Bits stored in source
+ * @param shift Right shift amount
+ * @param modality Modality type
+ * @param enableWindowLevel Enable window/level processing
+ * @return 0 on success
+ */
+int vulkan_compute_dispatch(void* renderer, uint32_t width, uint32_t height,
+                           float windowCenter, float windowWidth,
+                           int bitsStored, int shift, int modality, int enableWindowLevel);
+
+/**
+ * @brief Read back 8-bit result from compute
+ * @param renderer Renderer handle
+ * @param output Output buffer for 8-bit pixels
+ * @param width Width in pixels
+ * @param height Height in pixels
+ * @return 0 on success
+ */
+int vulkan_readback_8bit(void* renderer, uint8_t* output, uint32_t width, uint32_t height);
+
 #ifdef __cplusplus
 }
 #endif

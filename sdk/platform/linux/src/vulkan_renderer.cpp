@@ -72,11 +72,30 @@ struct VulkanRenderer {
     VkBuffer gsdf_lut_buffer;
     VkDeviceMemory gsdf_lut_memory;
     VkImageView gsdf_lut_view;
-    
+
+    // Compute pipeline (bitdepth conversion)
+    VkPipelineLayout compute_pipeline_layout;
+    VkPipeline compute_pipeline;
+
+    // 16-bit input texture
+    VkImage input_16bit_image;
+    VkDeviceMemory input_16bit_memory;
+    VkImageView input_16bit_view;
+
+    // 8-bit output image (compute result)
+    VkImage output_8bit_image;
+    VkDeviceMemory output_8bit_memory;
+    VkImageView output_8bit_view;
+
+    // Compute descriptor set
+    VkDescriptorSetLayout compute_descriptor_set_layout;
+    VkDescriptorPool compute_descriptor_pool;
+    VkDescriptorSet compute_descriptor_set;
+
     // State
     uint32_t current_frame;
     bool initialized;
-    
+
     // Window
     void* window;
     uint32_t width;
@@ -704,6 +723,653 @@ static const char* getVkResultString(VkResult result) {
         case VK_SUBOPTIMAL_KHR: return "Suboptimal";
         default: return "Unknown";
     }
+}
+
+// ============================================================================
+// Compute Pipeline (Bitdepth Conversion)
+// ============================================================================
+
+int vulkan_create_compute_pipeline(void* renderer, const uint32_t* comp_shader, size_t comp_size) {
+    if (!renderer || !comp_shader) return -1;
+
+    auto* r = static_cast<VulkanRenderer*>(renderer);
+    if (!r->device) return -1;
+
+    VkShaderModule comp_module = createShaderModule(r->device, comp_shader, comp_size);
+    if (!comp_module) return -1;
+
+    VkPipelineShaderStageCreateInfo compStageInfo = {};
+    compStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    compStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    compStageInfo.module = comp_module;
+    compStageInfo.pName = "main";
+
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+
+    if (vkCreateDescriptorSetLayout(r->device, &layoutInfo, nullptr, &r->compute_descriptor_set_layout) != VK_SUCCESS) {
+        vkDestroyShaderModule(r->device, comp_module, nullptr);
+        return -1;
+    }
+
+    VkPushConstantRange pushConstantRange = {};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(float) * 2 + sizeof(int) * 4;
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &r->compute_descriptor_set_layout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(r->device, &pipelineLayoutInfo, nullptr, &r->compute_pipeline_layout) != VK_SUCCESS) {
+        vkDestroyShaderModule(r->device, comp_module, nullptr);
+        return -1;
+    }
+
+    VkComputePipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = compStageInfo;
+    pipelineInfo.layout = r->compute_pipeline_layout;
+
+    if (vkCreateComputePipelines(r->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &r->compute_pipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(r->device, comp_module, nullptr);
+        return -1;
+    }
+
+    VkDescriptorPoolSize poolSizes[1] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = 2;
+
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(r->device, &poolInfo, nullptr, &r->compute_descriptor_pool) != VK_SUCCESS) {
+        vkDestroyShaderModule(r->device, comp_module, nullptr);
+        return -1;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = r->compute_descriptor_pool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &r->compute_descriptor_set_layout;
+
+    if (vkAllocateDescriptorSets(r->device, &allocInfo, &r->compute_descriptor_set) != VK_SUCCESS) {
+        vkDestroyShaderModule(r->device, comp_module, nullptr);
+        return -1;
+    }
+
+    vkDestroyShaderModule(r->device, comp_module, nullptr);
+    return 0;
+}
+
+int vulkan_upload_16bit_texture(void* renderer, const uint16_t* data, uint32_t width, uint32_t height) {
+    if (!renderer || !data) return -1;
+
+    auto* r = static_cast<VulkanRenderer*>(renderer);
+    if (!r->device) return -1;
+
+    if (r->input_16bit_image) {
+        vkDestroyImage(r->device, r->input_16bit_image, nullptr);
+    }
+    if (r->input_16bit_memory) {
+        vkFreeMemory(r->device, r->input_16bit_memory, nullptr);
+    }
+    if (r->input_16bit_view) {
+        vkDestroyImageView(r->device, r->input_16bit_view, nullptr);
+    }
+
+    VkDeviceSize image_size = width * height * sizeof(uint16_t);
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = image_size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(r->device, &bufferInfo, nullptr, &staging_buffer) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(r->device, staging_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = mem_requirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(r->device, &allocInfo, nullptr, &staging_memory) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    vkBindBufferMemory(r->device, staging_buffer, staging_memory, 0);
+
+    void* mapped;
+    vkMapMemory(r->device, staging_memory, 0, image_size, 0, &mapped);
+    memcpy(mapped, data, image_size);
+    vkUnmapMemory(r->device, staging_memory);
+
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R16_UINT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(r->device, &imageInfo, nullptr, &r->input_16bit_image) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    vkGetImageMemoryRequirements(r->device, r->input_16bit_image, &mem_requirements);
+
+    allocInfo.allocationSize = mem_requirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(r->device, &allocInfo, nullptr, &r->input_16bit_memory) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    vkBindImageMemory(r->device, r->input_16bit_image, r->input_16bit_memory, 0);
+
+    VkCommandPool temp_cmd_pool;
+    VkCommandPoolCreateInfo cmdPoolInfo = {};
+    cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmdPoolInfo.queueFamilyIndex = r->graphics_queue_family;
+    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+    if (vkCreateCommandPool(r->device, &cmdPoolInfo, nullptr, &temp_cmd_pool) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    VkCommandBuffer temp_cmd_buffer;
+    VkCommandBufferAllocateInfo cmdBufInfo = {};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdBufInfo.commandPool = temp_cmd_pool;
+    cmdBufInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdBufInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(r->device, &cmdBufInfo, &temp_cmd_buffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    vkBeginCommandBuffer(temp_cmd_buffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = r->input_16bit_image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(temp_cmd_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = width;
+    region.bufferImageHeight = height;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyBufferToImage(temp_cmd_buffer, staging_buffer, r->input_16bit_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    vkEndCommandBuffer(temp_cmd_buffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &temp_cmd_buffer;
+
+    VkFence temp_fence;
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(r->device, &fenceInfo, nullptr, &temp_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    if (vkQueueSubmit(r->graphics_queue, 1, &submitInfo, temp_fence) != VK_SUCCESS) {
+        vkDestroyFence(r->device, temp_fence, nullptr);
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    vkWaitForFences(r->device, 1, &temp_fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(r->device, temp_fence, nullptr);
+    vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+    vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+
+    vkDestroyBuffer(r->device, staging_buffer, nullptr);
+    vkFreeMemory(r->device, staging_memory, nullptr);
+
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = r->input_16bit_image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R16_UINT;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(r->device, &viewInfo, nullptr, &r->input_16bit_view) != VK_SUCCESS) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int vulkan_compute_dispatch(void* renderer, uint32_t width, uint32_t height,
+                           float windowCenter, float windowWidth,
+                           int bitsStored, int shift, int modality, int enableWindowLevel) {
+    if (!renderer) return -1;
+
+    auto* r = static_cast<VulkanRenderer*>(renderer);
+    if (!r->device || !r->compute_pipeline) return -1;
+
+    if (r->output_8bit_image) {
+        vkDestroyImage(r->device, r->output_8bit_image, nullptr);
+    }
+    if (r->output_8bit_memory) {
+        vkFreeMemory(r->device, r->output_8bit_memory, nullptr);
+    }
+    if (r->output_8bit_view) {
+        vkDestroyImageView(r->device, r->output_8bit_view, nullptr);
+    }
+
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(r->device, &imageInfo, nullptr, &r->output_8bit_image) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkMemoryRequirements mem_requirements;
+    vkGetImageMemoryRequirements(r->device, r->output_8bit_image, &mem_requirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = mem_requirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(r->device, &allocInfo, nullptr, &r->output_8bit_memory) != VK_SUCCESS) {
+        return -1;
+    }
+
+    vkBindImageMemory(r->device, r->output_8bit_image, r->output_8bit_memory, 0);
+
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = r->output_8bit_image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(r->device, &viewInfo, nullptr, &r->output_8bit_view) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkDescriptorImageInfo inputImageInfo = {};
+    inputImageInfo.imageView = r->input_16bit_view;
+    inputImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkDescriptorImageInfo outputImageInfo = {};
+    outputImageInfo.imageView = r->output_8bit_view;
+    outputImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet writes[2] = {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = r->compute_descriptor_set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].pImageInfo = &inputImageInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = r->compute_descriptor_set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].pImageInfo = &outputImageInfo;
+
+    vkUpdateDescriptorSets(r->device, 2, writes, 0, nullptr);
+
+    VkCommandPool temp_cmd_pool;
+    VkCommandPoolCreateInfo cmdPoolInfo = {};
+    cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmdPoolInfo.queueFamilyIndex = r->graphics_queue_family;
+    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+    if (vkCreateCommandPool(r->device, &cmdPoolInfo, nullptr, &temp_cmd_pool) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkCommandBuffer temp_cmd_buffer;
+    VkCommandBufferAllocateInfo cmdBufInfo = {};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdBufInfo.commandPool = temp_cmd_pool;
+    cmdBufInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdBufInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(r->device, &cmdBufInfo, &temp_cmd_buffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        return -1;
+    }
+
+    vkBeginCommandBuffer(temp_cmd_buffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    VkImageMemoryBarrier barriers[2] = {};
+
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].srcAccessMask = 0;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = r->input_16bit_image;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[1].srcAccessMask = 0;
+    barriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].image = r->output_8bit_image;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[1].subresourceRange.baseMipLevel = 0;
+    barriers[1].subresourceRange.levelCount = 1;
+    barriers[1].subresourceRange.baseArrayLayer = 0;
+    barriers[1].subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(temp_cmd_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, barriers);
+
+    vkCmdBindPipeline(temp_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->compute_pipeline);
+    vkCmdBindDescriptorSets(temp_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            r->compute_pipeline_layout, 0, 1, &r->compute_descriptor_set, 0, nullptr);
+
+    float pushConstants[6] = {
+        windowCenter,
+        windowWidth,
+        (float)bitsStored,
+        (float)shift,
+        (float)modality,
+        (float)enableWindowLevel
+    };
+    vkCmdPushConstants(temp_cmd_buffer, r->compute_pipeline_layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), pushConstants);
+
+    vkCmdDispatch(temp_cmd_buffer, (width + 15) / 16, (height + 15) / 16, 1);
+
+    VkImageMemoryBarrier outputBarrier = {};
+    outputBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    outputBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    outputBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    outputBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    outputBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    outputBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    outputBarrier.image = r->output_8bit_image;
+    outputBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    outputBarrier.subresourceRange.baseMipLevel = 0;
+    outputBarrier.subresourceRange.levelCount = 1;
+    outputBarrier.subresourceRange.baseArrayLayer = 0;
+    outputBarrier.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(temp_cmd_buffer,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &outputBarrier);
+
+    vkEndCommandBuffer(temp_cmd_buffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &temp_cmd_buffer;
+
+    VkFence temp_fence;
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(r->device, &fenceInfo, nullptr, &temp_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        return -1;
+    }
+
+    if (vkQueueSubmit(r->graphics_queue, 1, &submitInfo, temp_fence) != VK_SUCCESS) {
+        vkDestroyFence(r->device, temp_fence, nullptr);
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        return -1;
+    }
+
+    vkWaitForFences(r->device, 1, &temp_fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(r->device, temp_fence, nullptr);
+    vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+    vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+
+    return 0;
+}
+
+int vulkan_readback_8bit(void* renderer, uint8_t* output, uint32_t width, uint32_t height) {
+    if (!renderer || !output) return -1;
+
+    auto* r = static_cast<VulkanRenderer*>(renderer);
+    if (!r->device) return -1;
+
+    VkDeviceSize image_size = width * height * sizeof(uint8_t);
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = image_size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(r->device, &bufferInfo, nullptr, &staging_buffer) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(r->device, staging_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = mem_requirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(r->device, &allocInfo, nullptr, &staging_memory) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    vkBindBufferMemory(r->device, staging_buffer, staging_memory, 0);
+
+    VkCommandPool temp_cmd_pool;
+    VkCommandPoolCreateInfo cmdPoolInfo = {};
+    cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmdPoolInfo.queueFamilyIndex = r->graphics_queue_family;
+    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+    if (vkCreateCommandPool(r->device, &cmdPoolInfo, nullptr, &temp_cmd_pool) != VK_SUCCESS) {
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    VkCommandBuffer temp_cmd_buffer;
+    VkCommandBufferAllocateInfo cmdBufInfo = {};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdBufInfo.commandPool = temp_cmd_pool;
+    cmdBufInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdBufInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(r->device, &cmdBufInfo, &temp_cmd_buffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    vkBeginCommandBuffer(temp_cmd_buffer, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = width;
+    region.bufferImageHeight = height;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyImageToBuffer(temp_cmd_buffer, r->output_8bit_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging_buffer, 1, &region);
+
+    vkEndCommandBuffer(temp_cmd_buffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &temp_cmd_buffer;
+
+    VkFence temp_fence;
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(r->device, &fenceInfo, nullptr, &temp_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    if (vkQueueSubmit(r->graphics_queue, 1, &submitInfo, temp_fence) != VK_SUCCESS) {
+        vkDestroyFence(r->device, temp_fence, nullptr);
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        return -1;
+    }
+
+    vkWaitForFences(r->device, 1, &temp_fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(r->device, temp_fence, nullptr);
+    vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+    vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+
+    void* mapped;
+    vkMapMemory(r->device, staging_memory, 0, image_size, 0, &mapped);
+    memcpy(output, mapped, image_size);
+    vkUnmapMemory(r->device, staging_memory);
+
+    vkFreeMemory(r->device, staging_memory, nullptr);
+    vkDestroyBuffer(r->device, staging_buffer, nullptr);
+
+    return 0;
 }
 
 #ifdef __cplusplus

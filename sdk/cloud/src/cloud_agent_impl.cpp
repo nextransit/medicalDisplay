@@ -40,7 +40,9 @@
 #include <openssl/sha.h>
 #endif
 
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+#include <simdjson.h>
+#elif defined(HAS_NLOHMANN_JSON)
 #include <nlohmann/json.hpp>
 using Json = nlohmann::json;
 #elif defined(HAS_CJSON)
@@ -304,7 +306,18 @@ static inline TopicSet make_topics(const DeviceInfo& device) {
     return topics;
 }
 
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+static thread_local simdjson::ondemand::parser simdjson_parser;
+
+static inline simdjson::ondemand::document parse_json_doc(const std::string& payload) {
+    if (payload.empty()) {
+        return simdjson::ondemand::document();
+    }
+    auto doc = simdjson_parser.iterate(payload);
+    return doc;
+}
+
+#elif defined(HAS_NLOHMANN_JSON)
 static inline std::string json_dump(const Json& json) {
     return json.dump();
 }
@@ -938,7 +951,76 @@ static int parse_update_info(const std::string& payload, UpdateInfo* update_info
         return 0;
     }
     std::memset(update_info, 0, sizeof(*update_info));
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(payload);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) != 0) {
+        return -1;
+    }
+    std::string_view sv;
+    simdjson::ondemand::value field_val;
+    if (obj.find_field("version").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->version, sizeof(update_info->version), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("release_date").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->release_date, sizeof(update_info->release_date), std::string(sv).c_str());
+        }
+    }
+    obj.find_field("full_size").get(field_val);
+    uint64_t full_size_val = 0;
+    field_val.get_uint64().get(full_size_val);
+    update_info->full_size = static_cast<size_t>(full_size_val);
+    obj.find_field("delta_size").get(field_val);
+    uint64_t delta_size_val = 0;
+    field_val.get_uint64().get(delta_size_val);
+    update_info->delta_size = static_cast<size_t>(delta_size_val);
+    if (obj.find_field("checksum").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->checksum, sizeof(update_info->checksum), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("signature").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->signature, sizeof(update_info->signature), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("download_url").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->download_url, sizeof(update_info->download_url), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("delta_url").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->delta_url, sizeof(update_info->delta_url), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("base_version").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->base_version, sizeof(update_info->base_version), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("install_path").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->install_path, sizeof(update_info->install_path), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("changelog").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(update_info->changelog, sizeof(update_info->changelog), std::string(sv).c_str());
+        }
+    }
+    obj.find_field("is_mandatory").get(field_val);
+    field_val.get_bool().get(update_info->is_mandatory);
+    obj.find_field("is_security_update").get(field_val);
+    field_val.get_bool().get(update_info->is_security_update);
+    bool update_available = true;
+    obj.find_field("update_available").get(field_val);
+    field_val.get_bool().get(update_available);
+    return update_available ? 0 : 1;
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(payload);
     if (!json.is_object()) {
         return -1;
@@ -970,7 +1052,74 @@ static int parse_model_info(const std::string& payload, CloudModelInfo* model_in
         return 0;
     }
     std::memset(model_info, 0, sizeof(*model_info));
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(payload);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) != 0) {
+        return -1;
+    }
+    std::string_view sv;
+    simdjson::ondemand::value field_val;
+    if (obj.find_field("model_id").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->model_id, sizeof(model_info->model_id), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("version").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->version, sizeof(model_info->version), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("base_version").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->base_version, sizeof(model_info->base_version), std::string(sv).c_str());
+        }
+    }
+    obj.find_field("full_size").get(field_val);
+    uint64_t full_size_val2 = 0;
+    field_val.get_uint64().get(full_size_val2);
+    model_info->full_size = static_cast<size_t>(full_size_val2);
+    obj.find_field("delta_size").get(field_val);
+    uint64_t delta_size_val2 = 0;
+    field_val.get_uint64().get(delta_size_val2);
+    model_info->delta_size = static_cast<size_t>(delta_size_val2);
+    if (obj.find_field("checksum").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->checksum, sizeof(model_info->checksum), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("signature").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->signature, sizeof(model_info->signature), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("download_url").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->download_url, sizeof(model_info->download_url), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("delta_url").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->delta_url, sizeof(model_info->delta_url), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("install_path").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->install_path, sizeof(model_info->install_path), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("release_notes").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(model_info->release_notes, sizeof(model_info->release_notes), std::string(sv).c_str());
+        }
+    }
+    obj.find_field("is_mandatory").get(field_val);
+    field_val.get_bool().get(model_info->is_mandatory);
+    bool update_available = true;
+    obj.find_field("update_available").get(field_val);
+    field_val.get_bool().get(update_available);
+    return update_available ? 0 : 1;
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(payload);
     if (!json.is_object()) {
         return -1;
@@ -1001,7 +1150,55 @@ static int parse_command_message(const std::string& payload, CloudCommand* comma
         return -1;
     }
     std::memset(command, 0, sizeof(*command));
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(payload);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) != 0) {
+        return -1;
+    }
+    std::string_view sv;
+    simdjson::ondemand::value field_val;
+    if (obj.find_field("command_id").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(command->command_id, sizeof(command->command_id), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("command_type").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(command->command_type, sizeof(command->command_type), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("correlation_id").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(command->correlation_id, sizeof(command->correlation_id), std::string(sv).c_str());
+        }
+    }
+    if (obj.find_field("payload").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(command->payload, sizeof(command->payload), std::string(sv).c_str());
+        } else {
+            std::string_view raw_sv;
+            if (field_val.raw_json().get(raw_sv) == 0) {
+                copy_cstr(command->payload, sizeof(command->payload), std::string(raw_sv).c_str());
+            }
+        }
+    }
+    if (obj.find_field("received_at").get(field_val) == 0) {
+        if (field_val.get_string().get(sv) == 0) {
+            copy_cstr(command->received_at, sizeof(command->received_at), std::string(sv).c_str());
+        } else {
+            copy_cstr(command->received_at, sizeof(command->received_at), iso8601_now());
+        }
+    } else {
+        copy_cstr(command->received_at, sizeof(command->received_at), iso8601_now());
+    }
+    if (obj.find_field("requires_response").get(field_val) == 0) {
+        field_val.get_bool().get(command->requires_response);
+    } else {
+        command->requires_response = true;
+    }
+    return 0;
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(payload);
     if (!json.is_object()) {
         return -1;
@@ -1931,12 +2128,29 @@ int cloud_agent_get_recommendations(CloudAgent* agent,
                          agent->topics.qc_guidance_req,
                          payload,
                          &response,
-                         std::max(1000, agent->config.command_timeout_ms > 0
-                                          ? agent->config.command_timeout_ms
-                                          : kDefaultCommandTimeoutMs)) != 0) {
+                          std::max(1000, agent->config.command_timeout_ms > 0
+                                           ? agent->config.command_timeout_ms
+                                           : kDefaultCommandTimeoutMs)) != 0) {
         return -1;
     }
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(response);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) == 0) {
+        simdjson::ondemand::value field_val;
+        if (obj.find_field("guidance").get(field_val) == 0) {
+            std::string_view sv;
+            if (field_val.get_string().get(sv) == 0) {
+                response = std::string(sv);
+            } else {
+                std::string_view raw_sv;
+                if (field_val.raw_json().get(raw_sv) == 0) {
+                    response = std::string(raw_sv);
+                }
+            }
+        }
+    }
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(response);
     if (json.is_object() && json.contains("guidance")) {
         response = json["guidance"].is_string() ? json["guidance"].get<std::string>() : json["guidance"].dump();
@@ -1982,7 +2196,24 @@ int cloud_agent_download_federated_model(CloudAgent* agent,
                                           : kDefaultCommandTimeoutMs)) != 0) {
         return -1;
     }
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(response);
+    simdjson::ondemand::object obj;
+    if (doc.get_object().get(obj) == 0) {
+        simdjson::ondemand::value field_val;
+        if (obj.find_field("model_blob").get(field_val) == 0) {
+            std::string_view sv;
+            if (field_val.get_string().get(sv) == 0) {
+                response = std::string(sv);
+            } else {
+                std::string_view raw_sv;
+                if (field_val.raw_json().get(raw_sv) == 0) {
+                    response = std::string(raw_sv);
+                }
+            }
+        }
+    }
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(response);
     if (json.is_object() && json.contains("model_blob")) {
         response = json["model_blob"].is_string() ? json["model_blob"].get<std::string>() : json["model_blob"].dump();
@@ -2051,7 +2282,19 @@ int cloud_agent_sync_time(CloudAgent* agent, double* offset) {
                                           : kDefaultCommandTimeoutMs)) != 0) {
         return -1;
     }
-#ifdef HAS_NLOHMANN_JSON
+#ifdef HAS_SIMDJSON
+    auto doc = parse_json_doc(response);
+    simdjson::ondemand::object obj;
+    uint64_t server_ts_ms = now_ms();
+    if (doc.get_object().get(obj) == 0) {
+        simdjson::ondemand::value field_val;
+        if (obj.find_field("server_ts_ms").get(field_val) == 0) {
+            field_val.get_uint64().get(server_ts_ms);
+        }
+    }
+    const double receive_ts_ms = static_cast<double>(now_ms());
+    *offset = (static_cast<double>(server_ts_ms) - ((static_cast<double>(send_ts) + receive_ts_ms) / 2.0)) / 1000.0;
+#elif defined(HAS_NLOHMANN_JSON)
     Json json = parse_json(response);
     const double server_ts_ms = json.value("server_ts_ms", static_cast<double>(now_ms()));
     const double receive_ts_ms = static_cast<double>(now_ms());

@@ -1,0 +1,24 @@
+; Medical Image Vertex Shader
+; Input: full-screen quad
+; Output: UV coordinates
+
+; SPIR-V 1.4
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %outUV
+OpExecutionMode %main OriginLowerLeft
+
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+
+%float = OpTypeFloat 32
+%vec2 = OpTypeVector %float 2
+%ptr_out_vec2 = OpTypePointer Output %vec2
+
+%outUV = OpVariable %ptr_out_vec2 Output
+
+%main = OpFunction %void None %func
+%label = OpLabel
+OpStore %outUV (OpConstantNull %vec2)
+OpReturn
+OpFunctionEnd

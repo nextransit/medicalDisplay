@@ -1,5 +1,6 @@
 #include "ai_engine.h"
 #include "modality_strategy.h"
+#include "simd_utils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -168,13 +169,9 @@ float* preprocess_image_batch_internal(const uint8_t* data, int w, int h, int ch
 }
 }
 
-// [P2-OPT] Optimized normalize_tensor - precompute inverse and use multiply instead of divide
+// [P2-OPT] Optimized normalize_tensor using SIMD when available
 void normalize_tensor(float* data, int size, float mean, float stddev) {
-    // Precompute inverse to replace expensive division with multiplication
-    const float inv_stddev = 1.0f / stddev;
-    for (int i = 0; i < size; ++i) {
-        data[i] = (data[i] - mean) * inv_stddev;
-    }
+    simd_normalize_tensor(data, static_cast<size_t>(size), mean, stddev);
 }
 
 uint64_t hash_metadata_key(const char* modality, const char* series, int body_part) {

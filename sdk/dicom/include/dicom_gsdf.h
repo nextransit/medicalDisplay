@@ -9,21 +9,44 @@ extern "C" {
 #endif
 
 // ============================================================================
-// DICOM GSDF系数 (DICOM Part 14 Annex G)
+// DICOM GSDF (Grayscale Standard Display Function) — NEMA PS 3.14 §7
+//
+// JND→L (Eq.7-1): rational function of ln(j)
+//   log10(L) = (a + c·ln(j) + e·ln²(j) + g·ln³(j) + m·ln⁴(j))
+//            / (1 + b·ln(j) + d·ln²(j) + f·ln³(j) + h·ln⁴(j) + k·ln⁵(j))
+//
+// L→JND (Eq.7-2): direct degree-8 polynomial of log10(L)
+//   j(L) = A + B·log10(L) + C·log10²(L) + … + I·log10⁸(L)
 // ============================================================================
-#define GSDF_COEFFICIENT_A    -1.3011877
-#define GSDF_COEFFICIENT_B    -2.5840191e-2
-#define GSDF_COEFFICIENT_C     8.0242636e-2
-#define GSDF_COEFFICIENT_D    -1.0320229e-1
-#define GSDF_COEFFICIENT_E     1.3646699e-2
-#define GSDF_COEFFICIENT_F     2.8745620e-2
-#define GSDF_COEFFICIENT_G    -2.5468404e-3
 
-// 亮度范围
-#define GSDF_L_MIN            0.001
-#define GSDF_L_MAX            4000.0
-#define GSDF_JND_MIN          0.0
-#define GSDF_JND_MAX          1000.0
+/* Equation 7-1 coefficients: JND → Luminance */
+#define GSDF_EQ71_A   -1.3011877
+#define GSDF_EQ71_B   -2.5840191E-2
+#define GSDF_EQ71_C    8.0242636E-2
+#define GSDF_EQ71_D   -1.0320229E-1
+#define GSDF_EQ71_E    1.3646699E-1
+#define GSDF_EQ71_F    2.8745620E-2
+#define GSDF_EQ71_G   -2.5468404E-2
+#define GSDF_EQ71_H   -3.1978977E-3
+#define GSDF_EQ71_K    1.2992634E-4
+#define GSDF_EQ71_M    1.3635334E-3
+
+/* Equation 7-2 coefficients: Luminance → JND (polynomial in log10(L)) */
+#define GSDF_EQ72_A   71.498068
+#define GSDF_EQ72_B   94.593053
+#define GSDF_EQ72_C   41.912053
+#define GSDF_EQ72_D    9.8247004
+#define GSDF_EQ72_E    0.28175407
+#define GSDF_EQ72_F   -1.1878455
+#define GSDF_EQ72_G   -0.18014349
+#define GSDF_EQ72_H    0.14710899
+#define GSDF_EQ72_I   -0.017046845
+
+/* Luminance & JND range */
+#define GSDF_L_MIN             0.05
+#define GSDF_L_MAX          4000.0
+#define GSDF_JND_MIN           1.0
+#define GSDF_JND_MAX        1023.0
 
 // ============================================================================
 // 函数声明

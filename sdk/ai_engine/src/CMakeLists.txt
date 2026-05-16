@@ -17,5 +17,6 @@ endif()
 
 target_link_libraries(medicaldisplay_ai_platform PUBLIC
     medicaldisplay_common
+    medicaldisplay_simd
     Threads::Threads
 )

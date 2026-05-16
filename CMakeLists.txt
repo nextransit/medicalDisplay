@@ -13,14 +13,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 编译器设置 (优先使用g++-15)
-find_program(CXX_COMPILER_NAMES NAMES g++-15 g++-14 g++-13)
-if(CXX_COMPILER_NAMES AND NOT DEFINED CMAKE_CXX_COMPILER)
-    message(STATUS "Found C++ compiler: ${CXX_COMPILER_NAMES}")
-    if(NOT DEFINED CMAKE_C_COMPILER)
-        set(CMAKE_C_COMPILER "/usr/bin/cc" CACHE FILEPATH "C compiler" FORCE)
+# 编译器设置 — 使用 Apple Clang（系统默认），自动修复 C++ headers 搜索路径
+if(CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang")
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE _xcrun_sdk_path
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(_xcrun_sdk_path AND EXISTS "${_xcrun_sdk_path}/usr/include/c++/v1")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cxx-isystem ${_xcrun_sdk_path}/usr/include/c++/v1")
     endif()
-    set(CMAKE_CXX_COMPILER "${CXX_COMPILER_NAMES}" CACHE FILEPATH "C++ compiler" FORCE)
+    unset(_xcrun_sdk_path)
 endif()
 
 # Compiler flags
@@ -40,6 +44,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Threads
 find_package(Threads REQUIRED)
 
+# Highway SIMD library (optional - will use scalar fallback if not found)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(HWY QUIET libhwy)
+endif()
+if(NOT HWY_FOUND)
+    find_library(HWY_LIBRARY NAMES hwy PATHS /opt/homebrew/lib /usr/local/lib)
+endif()
+if(HWY_FOUND OR HWY_LIBRARY)
+    message(STATUS "Highway SIMD library found")
+endif()
+
 # ============================================================================
 # SDK Components
 # ============================================================================
@@ -51,7 +67,7 @@ add_subdirectory(sdk/dicom)
 add_subdirectory(sdk/cloud)
 
 # Platform-specific
-if(BUILD_PLATFORM_LINUX OR LINUX)
+if(BUILD_PLATFORM_LINUX OR (CMAKE_SYSTEM_NAME MATCHES "Linux"))
     add_subdirectory(sdk/platform/linux)
 endif()
 

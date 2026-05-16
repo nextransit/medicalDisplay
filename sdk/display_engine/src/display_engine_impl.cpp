@@ -6,8 +6,14 @@
 #include "display_engine.h"
 #include "display_engine_internal.h"
 #include "dicom_gsdf.h"
+#include "simd_utils.h"
+
+#ifdef MEDICALDISPLAY_ENABLE_VULKAN
+#include "vulkan_renderer.h"
+#endif
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <cmath>
 #include <mutex>
@@ -135,43 +141,66 @@ float display_luminance_to_jnd(float luminance) {
     return std::pow(10.0f, log10Jnd);
 }
 
+// [P1-FIX] Precomputed JND→Luminance LUT for stable inverse GSDF
+// Replaces Newton-Raphson iteration (which diverges at L→0) with binary search
+// on a lookup table. Same approach as gsdf_compute.glsl compute shader.
+// The LUT is computed once (lazy init, thread-safe via static mutex).
+
+#define GSDF_INVERSE_LUT_SIZE 4096
+#define GSDF_JND_MAX_FOR_LUT 1023.0f
+
+static float gsdf_inverse_lut[GSDF_INVERSE_LUT_SIZE];
+static bool gsdf_inverse_lut_ready = false;
+static std::mutex gsdf_inverse_lut_mutex;
+
+static void gsdf_inverse_lut_init() {
+    std::lock_guard<std::mutex> lock(gsdf_inverse_lut_mutex);
+    if (gsdf_inverse_lut_ready) return;
+
+    // Build forward LUT: JND index → luminance
+    // JND range [1.0, 1023.0] mapped to [0, LUT_SIZE-1]
+    for (int i = 0; i < GSDF_INVERSE_LUT_SIZE; ++i) {
+        float jnd = 1.0f + static_cast<float>(i) * (GSDF_JND_MAX_FOR_LUT - 1.0f)
+                    / static_cast<float>(GSDF_INVERSE_LUT_SIZE - 1);
+        gsdf_inverse_lut[i] = static_cast<float>(GSDF_L_MIN);
+
+        // Binary search: for each JND index, find L such that jnd(L) ≈ target
+        float target_jnd = jnd;
+        float lo = static_cast<float>(GSDF_L_MIN);
+        float hi = static_cast<float>(GSDF_L_MAX);
+
+        for (int iter = 0; iter < 30; ++iter) {
+            float mid = (lo + hi) * 0.5f;
+            float mid_jnd = display_luminance_to_jnd(mid);
+            if (mid_jnd < target_jnd) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        gsdf_inverse_lut[i] = (lo + hi) * 0.5f;
+    }
+    gsdf_inverse_lut_ready = true;
+}
+
 float display_jnd_to_luminance(float jnd) {
-    // Newton-Raphson iteration to solve inverse GSDF
-    float L = 100.0f;  // Initial guess
-
-    for (int i = 0; i < 10; i++) {
-        float log10L = std::log10(std::max(static_cast<float>(GSDF_L_MIN), L));
-        float log10L2 = log10L * log10L;
-        float log10L3 = log10L2 * log10L;
-        float log10L4 = log10L3 * log10L;
-        float log10L5 = log10L4 * log10L;
-        float log10L6 = log10L5 * log10L;
-
-        // Compute log10(JND(L)) - jnd
-        float log10Jnd = GSDF_COEFFICIENTS[0] +
-                         GSDF_COEFFICIENTS[1] * log10L +
-                         GSDF_COEFFICIENTS[2] * log10L2 +
-                         GSDF_COEFFICIENTS[3] * log10L3 +
-                         GSDF_COEFFICIENTS[4] * log10L4 +
-                         GSDF_COEFFICIENTS[5] * log10L5 +
-                         GSDF_COEFFICIENTS[6] * log10L6;
-        float f = log10Jnd - std::log10(jnd);
-
-        // Derivative of log10(JND) w.r.t. log10(L)
-        float df = GSDF_COEFFICIENTS[1] +
-                   2.0f * GSDF_COEFFICIENTS[2] * log10L +
-                   3.0f * GSDF_COEFFICIENTS[3] * log10L2 +
-                   4.0f * GSDF_COEFFICIENTS[4] * log10L3 +
-                   5.0f * GSDF_COEFFICIENTS[5] * log10L4 +
-                   6.0f * GSDF_COEFFICIENTS[6] * log10L5;
-
-        // Newton step in log10 space
-        log10L = log10L - f / df;
-        L = std::pow(10.0f, log10L);
-        L = std::max(static_cast<float>(GSDF_L_MIN), std::min(static_cast<float>(GSDF_L_MAX), L));
+    // Lazy init the inverse LUT
+    if (!gsdf_inverse_lut_ready) {
+        gsdf_inverse_lut_init();
     }
 
-    return L;
+    // Clamp JND to valid range
+    float clamped_jnd = std::max(1.0f, std::min(GSDF_JND_MAX_FOR_LUT, jnd));
+
+    // Map JND to LUT index (linear mapping)
+    float idx_f = (clamped_jnd - 1.0f) * static_cast<float>(GSDF_INVERSE_LUT_SIZE - 1)
+                  / (GSDF_JND_MAX_FOR_LUT - 1.0f);
+    int idx_lo = static_cast<int>(idx_f);
+    int idx_hi = std::min(idx_lo + 1, GSDF_INVERSE_LUT_SIZE - 1);
+    float frac = idx_f - static_cast<float>(idx_lo);
+
+    // Linear interpolation
+    return gsdf_inverse_lut[idx_lo] * (1.0f - frac) + gsdf_inverse_lut[idx_hi] * frac;
 }
 
 // [P1-FIX] display_generate_gsdf_lut: 实现真正的 GSDF LUT，而非恒等映射
@@ -721,6 +750,9 @@ int display_engine_render_frame(DisplayEngine* engine,
 
 // [P2-FIX] SIMD 优化的 16bit → 8bit 转换
 static inline void convert_16bit_to_8bit_simd(const uint16_t* src, uint8_t* dst, size_t count, int shift) {
+#ifdef HIGHWAY_ENABLED
+    simd_convert_16bit_to_8bit(src, dst, count, shift);
+#else
 #if defined(__AVX2__) && defined(__FMA__)
     // AVX2 SIMD 实现
     const __m256i mask = _mm256_set1_epi16(0xFF);
@@ -772,6 +804,7 @@ static inline void convert_16bit_to_8bit_simd(const uint16_t* src, uint8_t* dst,
         dst[i] = static_cast<uint8_t>((src[i] >> shift) & 0xFFu);
     }
 #endif
+#endif
 }
 
 int display_engine_render_dicom(DisplayEngine* engine,
@@ -791,14 +824,34 @@ int display_engine_render_dicom(DisplayEngine* engine,
 
     const int shift = std::max(0, bits_stored - 8);
     const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
-    
-    // [P2-FIX] 使用可复用缓冲区，避免每帧分配
+
+#ifdef MEDICALDISPLAY_ENABLE_VULKAN
+    void* vulkan_renderer = engine->device ? nullptr : nullptr;
+    if (vulkan_renderer && engine->config.use_vulkan) {
+        static thread_local std::vector<uint8_t> gpu_buffer;
+        gpu_buffer.resize(pixel_count);
+
+        if (vulkan_upload_16bit_texture(vulkan_renderer, pixel_data,
+                                        static_cast<uint32_t>(width), static_cast<uint32_t>(height)) == 0) {
+            int enableWL = window_width > 0.0f ? 1 : 0;
+            if (vulkan_compute_dispatch(vulkan_renderer,
+                                        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                        window_center, window_width,
+                                        bits_stored, shift, 0, enableWL) == 0) {
+                if (vulkan_readback_8bit(vulkan_renderer, gpu_buffer.data(),
+                                         static_cast<uint32_t>(width), static_cast<uint32_t>(height)) == 0) {
+                    return display_engine_render_frame(engine, gpu_buffer.data(), width, height, 0);
+                }
+            }
+        }
+    }
+#endif
+
     static thread_local std::vector<uint8_t> scratch_buffer;
     scratch_buffer.resize(pixel_count);
-    
-    // SIMD 优化的 16→8bit 转换
+
     convert_16bit_to_8bit_simd(pixel_data, scratch_buffer.data(), pixel_count, shift);
-    
+
     return display_engine_render_frame(engine, scratch_buffer.data(), width, height, 0);
 }
 

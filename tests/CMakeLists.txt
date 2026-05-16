@@ -54,10 +54,11 @@ add_library(medicaldisplay_test_support STATIC
 )
 
 target_include_directories(medicaldisplay_test_support
-    PUBLIC
+        PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/support
         ${CMAKE_CURRENT_SOURCE_DIR}/support/drm
         ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/include
+        ${MEDICALDISPLAY_ROOT}/sdk/common/include
         ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
         ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
         ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
@@ -68,9 +69,10 @@ target_compile_features(medicaldisplay_test_support PUBLIC cxx_std_17)
 target_compile_definitions(medicaldisplay_test_support PUBLIC MEDICALDISPLAY_FORCE_LINUX_DISPLAY)
 
 target_link_libraries(medicaldisplay_test_support
-    PUBLIC
+    PRIVATE
         Threads::Threads
         ZLIB::ZLIB
+        medicaldisplay_simd
 )
 
 if(APPLE)
@@ -83,6 +85,17 @@ function(add_medicaldisplay_gtest target_name)
         PRIVATE
             medicaldisplay_test_support
             GTest::gtest_main
+    )
+    target_include_directories(${target_name}
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/support
+            ${CMAKE_CURRENT_SOURCE_DIR}/support/drm
+            ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/include
+            ${MEDICALDISPLAY_ROOT}/sdk/common/include
+            ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
+            ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
+            ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
+            ${MEDICALDISPLAY_ROOT}/sdk/cloud/include
     )
     if(APPLE)
         target_link_libraries(${target_name} PRIVATE c++)

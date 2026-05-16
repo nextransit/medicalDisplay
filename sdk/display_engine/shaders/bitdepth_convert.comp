@@ -1,0 +1,56 @@
+#version 450
+
+// ============================================================================
+// Bit Depth Compute Shader
+// - 16-bit DICOM → 8-bit display conversion
+// - Window/Level application
+// - Proper scaling and clamping
+// ============================================================================
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, r16ui) uniform uimage2D inputImage;
+layout(binding = 1, r8) uniform writeonly image2D outputImage;
+
+layout(push_constant) uniform BitDepthPushConstants {
+    float windowCenter;
+    float windowWidth;
+    int bitsStored;
+    int shift;
+    int modality;
+    int enableWindowLevel;
+} pc;
+
+float applyWindowLevel(uint16_t rawValue) {
+    if (pc.enableWindowLevel == 0 || pc.windowWidth <= 0.0f) {
+        float normalized = float(rawValue) / float((1u << pc.bitsStored) - 1u);
+        return clamp(normalized, 0.0f, 1.0f);
+    }
+
+    float windowMin = pc.windowCenter - pc.windowWidth * 0.5f;
+    float windowMax = pc.windowCenter + pc.windowWidth * 0.5f;
+
+    float normalized = (float(rawValue) - windowMin) / (windowMax - windowMin);
+    return clamp(normalized, 0.0f, 1.0f);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+
+    ivec2 inputSize = imageSize(inputImage);
+    if (coord.x >= inputSize.x || coord.y >= inputSize.y) {
+        return;
+    }
+
+    uint rawValue = imageLoad(inputImage, coord).x;
+
+    if (pc.shift > 0) {
+        rawValue = rawValue >> pc.shift;
+    }
+
+    float processed = applyWindowLevel(rawValue);
+
+    uint8_t outputValue = uint8_t(processed * 255.0f + 0.5f);
+
+    imageStore(outputImage, coord, outputValue);
+}
