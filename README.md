@@ -138,7 +138,7 @@ AIRecognitionResult result;
 ai_engine_recognize_from_dicom(ai, dicom_data, 512, 512, 12, &result);
 
 // 4. 应用AI推荐策略
-display_engine_apply_strategy(display, &result.strategy);
+display_engine_apply_strategy(display, &result.strategy, result.modality);
 
 // 5. 渲染显示
 display_engine_render_dicom(display, dicom_data, 512, 512, 12, 0, 0);

@@ -65,12 +65,24 @@ inline std::string create_minimal_dicom_file(const std::string& stem = "medicald
     std::fwrite(preamble.data(), 1, preamble.size(), file);
     std::fwrite("DICM", 1, 4, file);
 
-    const uint8_t payload[] = {
-        0x08, 0x00, 0x16, 0x00, 'U', 'I', 0x1a, 0x00,
+    // Implicit VR Little Endian format: tag (4 bytes) + length (4 bytes) + data
+    // SOP Class UID (0008,0016) - CT Image Storage
+    uint8_t sop_class_uid[] = {
+        0x08, 0x00, 0x16, 0x00,  // Tag: (0008,0016)
+        0x1A, 0x00, 0x00, 0x00,  // Length: 26 (implicit VR)
         '1', '.', '2', '.', '8', '4', '0', '.', '1', '0', '0', '0', '8', '.',
         '5', '.', '1', '.', '4', '.', '1', '.', '1', '.', '2', '\0'
     };
-    std::fwrite(payload, 1, sizeof(payload), file);
+    std::fwrite(sop_class_uid, 1, sizeof(sop_class_uid), file);
+
+    // Modality (0008,0060) - "CT" (implicit VR)
+    uint8_t modality_tag[] = {
+        0x08, 0x00, 0x60, 0x00,  // Tag: (0008,0060)
+        0x02, 0x00, 0x00, 0x00,  // Length: 2 (implicit VR)
+        'C', 'T'                    // Value: "CT"
+    };
+    std::fwrite(modality_tag, 1, sizeof(modality_tag), file);
+
     std::fclose(file);
 
     return std::string(writable.data());

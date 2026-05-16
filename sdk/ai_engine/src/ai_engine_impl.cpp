@@ -72,6 +72,12 @@ static void fill_best_result(const float* scores, AIRecognitionResult* result) {
         }
     }
 
+    // [P0-FIX] 添加边界检查防止越界
+    if (best_idx < 0 || best_idx >= MODALITY_COUNT) {
+        best_idx = MODALITY_UNKNOWN;
+        best_score = 0.0f;
+    }
+
     result->modality = static_cast<ModalityType>(best_idx);
     result->confidence = best_score;
     result->strategy = DEFAULT_STRATEGIES[best_idx];

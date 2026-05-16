@@ -115,9 +115,10 @@ void display_engine_reset(DisplayEngine* engine);
  * 应用显示策略 (AI推荐或手动)
  * @param engine 引擎句柄
  * @param strategy 显示策略
+ * @param modality 模态类型 (用于确定GSDF配置)
  * @return 0成功
  */
-int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* strategy);
+int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* strategy, ModalityType modality);
 
 /**
  * 切换GSDF模式

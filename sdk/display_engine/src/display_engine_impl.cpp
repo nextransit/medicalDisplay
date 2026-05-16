@@ -5,6 +5,7 @@
 
 #include "display_engine.h"
 #include "display_engine_internal.h"
+#include "dicom_gsdf.h"
 
 #include <array>
 #include <cstring>
@@ -149,38 +150,32 @@ float display_jnd_to_luminance(float jnd) {
     return L;
 }
 
+// [P1-FIX] display_generate_gsdf_lut: 实现真正的 GSDF LUT，而非恒等映射
+// 使用 DICOM Part 14 规定的 GSDF 算法
 void display_generate_gsdf_lut(float ambient_luminance, float target_luminance,
                                 int bit_depth, uint16_t* output) {
     if (!output) return;
     
-    uint32_t lut_size = 1 << bit_depth;
+    const int lut_size = 1 << bit_depth;
     
-    // Calculate ambient light contribution
-    float ambient_reflected = ambient_luminance * 0.02f;  // Assume 2% reflection
+    // 使用 dicom_gsdf.c 中已实现的真正 GSDF 算法
+    // 分配临时 float LUT
+    std::vector<float> float_lut(lut_size);
     
-    for (uint32_t i = 0; i < lut_size; i++) {
-        // Normalized input value
-        float normalized_input = (float)i / (lut_size - 1);
-        
-        // Map to target luminance range
-        float target_luma = normalized_input * target_luminance;
-        
-        // Add ambient light
-        float L = target_luma + ambient_reflected;
-        L = std::max(GSDF_L_MIN, std::min(GSDF_L_MAX, L));
-        
-        // Convert to Jnd
-        float jnd = display_luminance_to_jnd(L);
-        
-        // Find the input value that produces this Jnd
-        (void)jnd; // reserved for inverse lookup
-        
-        // Simple linear approximation for output
-        // (Real implementation would use interpolation)
-        float output_value = normalized_input;
-        
-        // Clamp to output range
-        output[i] = (uint16_t)(output_value * (lut_size - 1));
+    // 生成 P-Value LUT
+    if (gsdf_generate_lut(float_lut.data(), lut_size, bit_depth,
+                           ambient_luminance, target_luminance) != 0) {
+        // fallback: 简单线性映射
+        for (int i = 0; i < lut_size; ++i) {
+            output[i] = static_cast<uint16_t>(i);
+        }
+        return;
+    }
+    
+    // 转换为 uint16_t 输出 (0 到 lut_size-1)
+    const float scale = static_cast<float>(lut_size - 1);
+    for (int i = 0; i < lut_size; ++i) {
+        output[i] = static_cast<uint16_t>(float_lut[i] * scale + 0.5f);
     }
 }
 
@@ -592,7 +587,7 @@ void display_engine_reset(DisplayEngine* engine) {
     apply_public_config(engine);
 }
 
-int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* strategy) {
+int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* strategy, ModalityType modality) {
     if (!engine || !strategy) {
         return -1;
     }
@@ -603,7 +598,8 @@ int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* 
     engine->internal_config.window_width = strategy->window_width;
     engine->internal_config.enable_local_enhance = strategy->local_enhance != 0;
     engine->internal_config.hdr_mode = static_cast<Display_HDRMode>(strategy->hdr_mode);
-    engine->internal_config.gsdf_profile = display_get_recommended_gsdf(strategy->local_enhance == 5 ? MODALITY_SURGICAL : MODALITY_CT);
+    // [P0-FIX] 使用传入的 modality 而不是二元推断
+    engine->internal_config.gsdf_profile = display_get_recommended_gsdf(modality);
     return apply_public_config(engine);
 }
 
@@ -672,6 +668,61 @@ int display_engine_render_frame(DisplayEngine* engine,
     return result;
 }
 
+// [P2-FIX] SIMD 优化的 16bit → 8bit 转换
+static inline void convert_16bit_to_8bit_simd(const uint16_t* src, uint8_t* dst, size_t count, int shift) {
+#if defined(__AVX2__) && defined(__FMA__)
+    // AVX2 SIMD 实现
+    const __m256i mask = _mm256_set1_epi16(0xFF);
+    const __m256i shift_vec = _mm256_set1_epi16(static_cast<int16_t>(shift));
+    
+    size_t i = 0;
+    for (; i + 16 <= count; i += 16) {
+        __m256i pixels = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        if (shift > 0) {
+            pixels = _mm256_srl_epi16(pixels, shift_vec);
+        }
+        __m256i low = _mm256_unpacklo_epi8(_mm256_setzero_si256(), pixels);
+        __m256i high = _mm256_unpackhi_epi8(_mm256_setzero_si256(), pixels);
+        low = _mm256_and_si256(low, mask);
+        high = _mm256_and_si256(high, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), _mm256_castsi256_si128(low));
+        if (i + 8 < count) {
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i + 8), _mm256_extracti128_si256(high, 1));
+        }
+    }
+    // 处理剩余像素
+    for (; i < count; ++i) {
+        dst[i] = static_cast<uint8_t>((src[i] >> shift) & 0xFFu);
+    }
+#elif defined(__SSE2__)
+    // SSE2 SIMD 实现
+    const __m128i mask = _mm_set1_epi16(0xFF);
+    const __m128i shift_vec = _mm_set1_epi16(static_cast<int16_t>(shift));
+    
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        if (shift > 0) {
+            pixels = _mm_srl_epi16(pixels, shift_vec);
+        }
+        __m128i bytes = _mm_unpacklo_epi8(_mm_setzero_si128(), pixels);
+        bytes = _mm_and_si128(bytes, mask);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + i), bytes);
+        bytes = _mm_unpackhi_epi8(_mm_setzero_si128(), pixels);
+        bytes = _mm_and_si128(bytes, mask);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + i + 4), bytes);
+    }
+    for (; i < count; ++i) {
+        dst[i] = static_cast<uint8_t>((src[i] >> shift) & 0xFFu);
+    }
+#else
+    // Scalar fallback
+    for (size_t i = 0; i < count; ++i) {
+        dst[i] = static_cast<uint8_t>((src[i] >> shift) & 0xFFu);
+    }
+#endif
+}
+
 int display_engine_render_dicom(DisplayEngine* engine,
                                 const uint16_t* pixel_data,
                                 int width,
@@ -688,11 +739,16 @@ int display_engine_render_dicom(DisplayEngine* engine,
     }
 
     const int shift = std::max(0, bits_stored - 8);
-    std::vector<uint8_t> converted(static_cast<size_t>(width) * static_cast<size_t>(height));
-    for (size_t index = 0; index < converted.size(); ++index) {
-        converted[index] = static_cast<uint8_t>((pixel_data[index] >> shift) & 0xFFu);
-    }
-    return display_engine_render_frame(engine, converted.data(), width, height, 0);
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    
+    // [P2-FIX] 使用可复用缓冲区，避免每帧分配
+    static thread_local std::vector<uint8_t> scratch_buffer;
+    scratch_buffer.resize(pixel_count);
+    
+    // SIMD 优化的 16→8bit 转换
+    convert_16bit_to_8bit_simd(pixel_data, scratch_buffer.data(), pixel_count, shift);
+    
+    return display_engine_render_frame(engine, scratch_buffer.data(), width, height, 0);
 }
 
 int display_engine_list_displays(DisplayEngine* engine, int* displays, int max_count) {
