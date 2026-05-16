@@ -4,6 +4,7 @@
  */
 
 #include "dicom_reader.h"
+#include "simd_utils.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -716,6 +717,16 @@ int dicom_read_pixels(DICOM_Dataset dataset, DICOM_PixelData* pixel_info) {
 
 float dicom_pixel_to_hu(int raw_pixel, float slope, float intercept) {
     return slope * (float)raw_pixel + intercept;
+}
+
+int dicom_pixels_to_hu_batch(const uint16_t* raw_pixels, size_t count,
+                             float slope, float intercept, float* hu_values) {
+    if (!raw_pixels || !hu_values || count == 0) {
+        return -1;
+    }
+
+    simd_pixels_to_hu_batch(raw_pixels, hu_values, count, slope, intercept);
+    return 0;
 }
 
 int dicom_apply_modality_lut(int raw_pixel, const uint16_t* lut_data, int lut_entries) {

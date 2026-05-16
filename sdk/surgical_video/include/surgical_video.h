@@ -169,6 +169,23 @@ int surgical_engine_process_batch(SurgicalVideoEngine* engine,
                                  uint8_t** outputs);
 
 /**
+ * 批量处理帧（带每帧元数据）
+ * @param engine 引擎句柄
+ * @param frames 输入帧数组
+ * @param frame_infos 输入帧信息数组
+ * @param count 帧数量
+ * @param outputs 输出帧数组
+ * @param output_infos 输出帧信息数组，可为NULL
+ * @return 成功处理数量，-1失败
+ */
+int surgical_engine_process_batch_ex(SurgicalVideoEngine* engine,
+                                    const uint8_t** frames,
+                                    const VideoFrameInfo* frame_infos,
+                                    int count,
+                                    uint8_t** outputs,
+                                    VideoFrameInfo* output_infos);
+
+/**
  * 设置增强模式
  * @param engine 引擎句柄
  * @param mode 增强模式

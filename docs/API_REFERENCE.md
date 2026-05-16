@@ -124,6 +124,19 @@ int display_load_lut(Display_Device device,
                       const Display_LUT* lut);
 ```
 
+### surgical_engine_process_batch_ex
+
+按每帧输入元数据批量处理术野视频，避免旧批处理接口里固定 `1920x1080 RGB` 的限制。
+
+```c
+int surgical_engine_process_batch_ex(SurgicalVideoEngine* engine,
+                                     const uint8_t** frames,
+                                     const VideoFrameInfo* frame_infos,
+                                     int count,
+                                     uint8_t** outputs,
+                                     VideoFrameInfo* output_infos);
+```
+
 ---
 
 ## DICOM API
@@ -166,6 +179,18 @@ typedef struct {
 float dicom_pixel_to_hu(int raw_pixel, 
                         float slope, 
                         float intercept);
+```
+
+### dicom_pixels_to_hu_batch
+
+批量将 16-bit 原始像素转换为 HU，内部会走 SIMD 加速路径（若平台可用）。
+
+```c
+int dicom_pixels_to_hu_batch(const uint16_t* raw_pixels,
+                             size_t count,
+                             float slope,
+                             float intercept,
+                             float* hu_values);
 ```
 
 ---

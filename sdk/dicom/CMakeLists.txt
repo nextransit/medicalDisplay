@@ -11,6 +11,10 @@ target_include_directories(medicaldisplay_dicom PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+target_link_libraries(medicaldisplay_dicom PUBLIC
+    medicaldisplay_simd
+)
+
 # zlib for compressed DICOM
 find_package(ZLIB QUIET)
 if(ZLIB_FOUND)

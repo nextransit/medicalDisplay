@@ -50,6 +50,7 @@ add_library(medicaldisplay_test_support STATIC
     ${MEDICALDISPLAY_ROOT}/sdk/display_engine/src/display_engine_impl.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_reader.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_gsdf.c
+    ${MEDICALDISPLAY_ROOT}/sdk/surgical_video/src/surgical_video.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/src/drm_display.cpp
 )
 
@@ -61,8 +62,15 @@ target_include_directories(medicaldisplay_test_support
         ${MEDICALDISPLAY_ROOT}/sdk/common/include
         ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
         ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
+        ${MEDICALDISPLAY_ROOT}/sdk/surgical_video/include
         ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
         ${MEDICALDISPLAY_ROOT}/sdk/cloud/include
+        ${MEDICALDISPLAY_ROOT}/sdk/predictive_maintenance/include
+        ${MEDICALDISPLAY_ROOT}/sdk/federated/include
+        ${MEDICALDISPLAY_ROOT}/sdk/multimodal/include
+        ${MEDICALDISPLAY_ROOT}/sdk/multiscreen/include
+        ${MEDICALDISPLAY_ROOT}/sdk/ar_overlay/include
+        ${MEDICALDISPLAY_ROOT}/sdk/digital_twin/include
 )
 
 target_compile_features(medicaldisplay_test_support PUBLIC cxx_std_17)
@@ -73,6 +81,12 @@ target_link_libraries(medicaldisplay_test_support
         Threads::Threads
         ZLIB::ZLIB
         medicaldisplay_simd
+        medicaldisplay_predictive
+        medicaldisplay_federated
+        medicaldisplay_multimodal
+        medicaldisplay_multiscreen
+        medicaldisplay_ar_overlay
+        medicaldisplay_digital_twin
 )
 
 if(APPLE)
@@ -94,8 +108,15 @@ function(add_medicaldisplay_gtest target_name)
             ${MEDICALDISPLAY_ROOT}/sdk/common/include
             ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
             ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
+            ${MEDICALDISPLAY_ROOT}/sdk/surgical_video/include
             ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
             ${MEDICALDISPLAY_ROOT}/sdk/cloud/include
+            ${MEDICALDISPLAY_ROOT}/sdk/predictive_maintenance/include
+            ${MEDICALDISPLAY_ROOT}/sdk/federated/include
+            ${MEDICALDISPLAY_ROOT}/sdk/multimodal/include
+            ${MEDICALDISPLAY_ROOT}/sdk/multiscreen/include
+            ${MEDICALDISPLAY_ROOT}/sdk/ar_overlay/include
+            ${MEDICALDISPLAY_ROOT}/sdk/digital_twin/include
     )
     if(APPLE)
         target_link_libraries(${target_name} PRIVATE c++)
@@ -129,3 +150,32 @@ add_medicaldisplay_gtest(test_cloud_security
 add_medicaldisplay_gtest(test_dicom_security
     test_dicom_security.cpp
 )
+
+# ========================================================================
+# v2.0 新增模块单元测试
+# ========================================================================
+
+add_medicaldisplay_gtest(test_predictive_maintenance
+    test_predictive_maintenance.cpp
+)
+
+add_medicaldisplay_gtest(test_federated
+    test_federated.cpp
+)
+
+add_medicaldisplay_gtest(test_multimodal
+    test_multimodal.cpp
+)
+
+add_medicaldisplay_gtest(test_multiscreen
+    test_multiscreen.cpp
+)
+
+add_medicaldisplay_gtest(test_ar_overlay
+    test_ar_overlay.cpp
+)
+
+add_medicaldisplay_gtest(test_digital_twin
+    test_digital_twin.cpp
+)
+

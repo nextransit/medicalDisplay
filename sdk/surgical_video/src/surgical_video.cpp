@@ -42,6 +42,10 @@ struct SurgicalVideoEngine {
     // 帧处理
     std::queue<FrameBuffer> frame_queue;
     uint32_t frame_counter;
+    std::vector<uint8_t> yuv_buffer;
+    std::vector<uint8_t> rgb_buffer;
+    std::vector<uint8_t> gray_buffer;
+    std::vector<uint8_t> edge_buffer;
     
     SurgicalVideoEngine(SurgicalType type, bool gpu)
         : surgical_type(type), use_gpu(gpu), current_mode(ENHANCE_NONE),
@@ -69,6 +73,12 @@ struct SurgicalVideoEngine {
 
 static inline uint8_t clamp_uint8(float value) {
     return static_cast<uint8_t>(std::max(0.0f, std::min(255.0f, value)));
+}
+
+static void ensure_buffer_size(std::vector<uint8_t>& buffer, size_t required_size) {
+    if (buffer.size() < required_size) {
+        buffer.resize(required_size);
+    }
 }
 
 // Sobel边缘检测
@@ -149,29 +159,74 @@ static void yuv_to_rgb(const uint8_t* yuv, uint8_t* rgb, int pixel_count) {
     }
 }
 
+static void yuv422_to_rgb(const uint8_t* yuv422, uint8_t* rgb, int pixel_count) {
+    for (int i = 0, out = 0; i + 1 < pixel_count; i += 2, out += 4) {
+        int packed = i * 2;
+        int y0 = yuv422[packed + 0] - 16;
+        int u  = yuv422[packed + 1] - 128;
+        int y1 = yuv422[packed + 2] - 16;
+        int v  = yuv422[packed + 3] - 128;
+
+        rgb[out + 0] = clamp_uint8(1.164f * y0 + 1.596f * v);
+        rgb[out + 1] = clamp_uint8(1.164f * y0 - 0.392f * u - 0.813f * v);
+        rgb[out + 2] = clamp_uint8(1.164f * y0 + 2.017f * u);
+
+        rgb[out + 3] = clamp_uint8(1.164f * y1 + 1.596f * v);
+        rgb[out + 4] = clamp_uint8(1.164f * y1 - 0.392f * u - 0.813f * v);
+        rgb[out + 5] = clamp_uint8(1.164f * y1 + 2.017f * u);
+    }
+}
+
+static void rgb_to_yuv422(const uint8_t* rgb, uint8_t* yuv422, int pixel_count) {
+    for (int i = 0; i < pixel_count; i += 2) {
+        const int packed = (i / 2) * 4;
+        const int idx0 = i * 3;
+        const int idx1 = (i + 1 < pixel_count) ? (i + 1) * 3 : idx0;
+
+        const float r0 = rgb[idx0 + 0];
+        const float g0 = rgb[idx0 + 1];
+        const float b0 = rgb[idx0 + 2];
+        const float r1 = rgb[idx1 + 0];
+        const float g1 = rgb[idx1 + 1];
+        const float b1 = rgb[idx1 + 2];
+
+        const float y0 = 0.299f * r0 + 0.587f * g0 + 0.114f * b0;
+        const float u0 = -0.169f * r0 - 0.331f * g0 + 0.5f * b0 + 128.0f;
+        const float v0 = 0.5f * r0 - 0.419f * g0 - 0.081f * b0 + 128.0f;
+        const float y1 = 0.299f * r1 + 0.587f * g1 + 0.114f * b1;
+        const float u1 = -0.169f * r1 - 0.331f * g1 + 0.5f * b1 + 128.0f;
+        const float v1 = 0.5f * r1 - 0.419f * g1 - 0.081f * b1 + 128.0f;
+
+        yuv422[packed + 0] = clamp_uint8(y0);
+        yuv422[packed + 1] = clamp_uint8((u0 + u1) * 0.5f);
+        yuv422[packed + 2] = clamp_uint8(y1);
+        yuv422[packed + 3] = clamp_uint8((v0 + v1) * 0.5f);
+    }
+}
+
 // 更新延迟统计
 static void update_latency_stats(PerformanceStats* stats, float latency_ms) {
-    if (stats->frames_processed == 0) {
-        stats->total_latency_ms = latency_ms;
-        stats->avg_latency_ms = latency_ms;
-        stats->max_latency_ms = latency_ms;
-        stats->p95_latency_ms = latency_ms;
-        stats->p99_latency_ms = latency_ms;
-    } else {
-        float alpha = 0.1f;
-        stats->avg_latency_ms = alpha * latency_ms + (1.0f - alpha) * stats->avg_latency_ms;
-        stats->total_latency_ms += latency_ms;
-        stats->max_latency_ms = std::max(stats->max_latency_ms, latency_ms);
-        
-        if (latency_ms > stats->p95_latency_ms * 0.9f) {
-            stats->p95_latency_ms = latency_ms * 1.05f;
-        }
-        if (latency_ms > stats->p99_latency_ms * 0.95f) {
-            stats->p99_latency_ms = latency_ms * 1.02f;
-        }
-    }
-    
+    stats->total_latency_ms += latency_ms;
+    stats->max_latency_ms = std::max(stats->max_latency_ms, latency_ms);
+
+    const float sample_count = std::max(1u, stats->frames_processed);
+    stats->avg_latency_ms = stats->total_latency_ms / sample_count;
     stats->current_fps = 1000.0f / stats->avg_latency_ms;
+}
+
+static void update_latency_percentiles(SurgicalVideoEngine* engine, float latency_ms) {
+    engine->latency_history.push_back(latency_ms);
+    if (engine->latency_history.size() > engine->latency_history_size) {
+        engine->latency_history.erase(engine->latency_history.begin());
+    }
+
+    std::vector<float> sorted = engine->latency_history;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t last = sorted.size() - 1;
+    const size_t p95_index = static_cast<size_t>(0.95f * static_cast<float>(last));
+    const size_t p99_index = static_cast<size_t>(0.99f * static_cast<float>(last));
+    engine->stats.p95_latency_ms = sorted[p95_index];
+    engine->stats.p99_latency_ms = sorted[p99_index];
 }
 
 // ============================================================================
@@ -215,20 +270,35 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
     
     int pixel_count = input_info->width * input_info->height;
     
+    uint32_t out_fmt = 1;
     if (output_info) {
+        out_fmt = output_info->format <= 2 ? output_info->format : input_info->format;
         *output_info = *input_info;
+        output_info->format = out_fmt;
     }
-    
-    std::vector<uint8_t> yuv(pixel_count * 3);
-    std::vector<uint8_t> temp_rgb(pixel_count * 3);
-    
+
+    const size_t rgb_size = static_cast<size_t>(pixel_count) * 3;
+    const size_t gray_size = static_cast<size_t>(pixel_count);
+    const size_t yuv422_size = static_cast<size_t>(pixel_count) * 2;
+    ensure_buffer_size(engine->rgb_buffer, rgb_size);
+    uint8_t* temp_rgb = engine->rgb_buffer.data();
+
+    const bool want_yuv_output = out_fmt == 0;
+    const bool want_yuv422_output = out_fmt == 2;
+    if (want_yuv_output || input_info->format == 0) {
+        ensure_buffer_size(engine->yuv_buffer, rgb_size);
+    } else if (want_yuv422_output || input_info->format == 2) {
+        ensure_buffer_size(engine->yuv_buffer, yuv422_size);
+    }
+
     if (input_info->format == 0) {
-        std::memcpy(yuv.data(), input, pixel_count * 3);
+        std::memcpy(engine->yuv_buffer.data(), input, rgb_size);
+        yuv_to_rgb(engine->yuv_buffer.data(), temp_rgb, pixel_count);
+    } else if (input_info->format == 2) {
+        yuv422_to_rgb(input, temp_rgb, pixel_count);
     } else {
-        rgb_to_yuv(input, yuv.data(), pixel_count);
+        std::memcpy(temp_rgb, input, rgb_size);
     }
-    
-    yuv_to_rgb(yuv.data(), temp_rgb.data(), pixel_count);
     
     // 亮度/对比度/饱和度调整
     float brightness = engine->params.brightness * 128.0f;
@@ -262,7 +332,7 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
     
     // 无血术野处理
     if (engine->params.bloodless_strength > 0.0f) {
-        float blood_ratio = detect_blood_content(temp_rgb.data(), 
+        float blood_ratio = detect_blood_content(temp_rgb,
                                                  input_info->width, input_info->height);
         if (blood_ratio > engine->params.bloodless_threshold) {
             float suppress = engine->params.bloodless_strength * 0.5f;
@@ -283,7 +353,8 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
     
     // 边缘增强
     if (engine->current_mode != ENHANCE_NONE && engine->params.edge_strength > 0.0f) {
-        std::vector<uint8_t> gray(pixel_count);
+        ensure_buffer_size(engine->gray_buffer, gray_size);
+        uint8_t* gray = engine->gray_buffer.data();
         for (int i = 0; i < pixel_count; i++) {
             gray[i] = static_cast<uint8_t>(
                 0.299f * temp_rgb[i * 3 + 0] +
@@ -291,10 +362,12 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
                 0.114f * temp_rgb[i * 3 + 2]
             );
         }
-        
-        std::vector<uint8_t> edge(pixel_count);
-        sobel_edge_detect(gray.data(), input_info->width, input_info->height,
-                          edge.data(), engine->params.edge_threshold);
+
+        ensure_buffer_size(engine->edge_buffer, gray_size);
+        uint8_t* edge = engine->edge_buffer.data();
+        std::memset(edge, 0, gray_size);
+        sobel_edge_detect(gray, input_info->width, input_info->height,
+                          edge, engine->params.edge_threshold);
         
         for (int i = 0; i < pixel_count; i++) {
             if (edge[i] > 0) {
@@ -331,9 +404,8 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
                 int idx = (y * w + x) * 3;
                 
                 for (int c = 0; c < 3; c++) {
-                    float center = temp_rgb[idx + c];
+                    const float center = temp_rgb[idx + c];
                     float blur = 0.0f;
-                    int count = 0;
                     
                     for (int ky = -1; ky <= 1; ky++) {
                         for (int kx = -1; kx <= 1; kx++) {
@@ -341,10 +413,9 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
                             int py = y + ky;
                             int pidx = (py * w + px) * 3;
                             blur += temp_rgb[pidx + c];
-                            count++;
                         }
                     }
-                    blur /= count;
+                    blur /= 9.0f;
                     
                     float sharpened = center + (center - blur) * engine->params.sharpness;
                     temp_rgb[idx + c] = clamp_uint8(sharpened);
@@ -353,22 +424,27 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
         }
     }
     
-    rgb_to_yuv(temp_rgb.data(), yuv.data(), pixel_count);
-    
-    // output_info 可能为 NULL，提取 format 前必须判空
-    int out_fmt = output_info ? (int)output_info->format : 1;  // 默认为 RGB
-    if (out_fmt == 0) {
-        std::memcpy(output, yuv.data(), pixel_count * 3);
+    if (want_yuv_output) {
+        rgb_to_yuv(temp_rgb, engine->yuv_buffer.data(), pixel_count);
+        std::memcpy(output, engine->yuv_buffer.data(), rgb_size);
+    } else if (want_yuv422_output) {
+        rgb_to_yuv422(temp_rgb, engine->yuv_buffer.data(), pixel_count);
+        std::memcpy(output, engine->yuv_buffer.data(), yuv422_size);
     } else {
-        yuv_to_rgb(yuv.data(), output, pixel_count);
+        std::memcpy(output, temp_rgb, rgb_size);
     }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     float latency_ms = std::chrono::duration<float, std::milli>(end_time - start_time).count();
-    
+
     engine->stats.frames_processed++;
     update_latency_stats(&engine->stats, latency_ms);
-    
+    update_latency_percentiles(engine, latency_ms);
+    engine->stats.memory_used_mb =
+        static_cast<float>(engine->yuv_buffer.size() + engine->rgb_buffer.size() +
+                           engine->gray_buffer.size() + engine->edge_buffer.size()) /
+        (1024.0f * 1024.0f);
+
     return 0;
 }
 
@@ -377,16 +453,30 @@ int surgical_engine_process_batch(SurgicalVideoEngine* engine,
                                  int count,
                                  uint8_t** outputs) {
     if (!engine || !frames || !outputs) return -1;
-    
+
+    std::vector<VideoFrameInfo> default_infos(static_cast<size_t>(count),
+                                              VideoFrameInfo{1920, 1080, 1, 0, 60.0f, 0, 0});
+    return surgical_engine_process_batch_ex(engine, frames, default_infos.data(), count, outputs, nullptr);
+}
+
+int surgical_engine_process_batch_ex(SurgicalVideoEngine* engine,
+                                    const uint8_t** frames,
+                                    const VideoFrameInfo* frame_infos,
+                                    int count,
+                                    uint8_t** outputs,
+                                    VideoFrameInfo* output_infos) {
+    if (!engine || !frames || !frame_infos || !outputs || count < 0) {
+        return -1;
+    }
+
     int processed = 0;
-    VideoFrameInfo info = {1920, 1080, 1, 0, 60.0f, 0, 0};
-    
-    for (int i = 0; i < count; i++) {
-        if (surgical_engine_process_frame(engine, frames[i], &info, outputs[i], &info) == 0) {
+    for (int i = 0; i < count; ++i) {
+        VideoFrameInfo* out_info = output_infos ? &output_infos[i] : nullptr;
+        const VideoFrameInfo* in_info = &frame_infos[(count == 1) ? 0 : i];
+        if (surgical_engine_process_frame(engine, frames[i], in_info, outputs[i], out_info) == 0) {
             processed++;
         }
     }
-    
     return processed;
 }
 

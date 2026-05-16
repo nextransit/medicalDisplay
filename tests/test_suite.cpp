@@ -13,6 +13,7 @@ extern "C" {
 #include "ai_engine.h"
 #include "dicom_gsdf.h"
 #include "dicom_reader.h"
+#include "surgical_video.h"
 }
 
 #include "display_engine_internal.h"
@@ -284,11 +285,109 @@ TEST(DicomReaderUnitTest, SopClassHuAndModalityLutBehaviors) {
     EXPECT_FLOAT_EQ(0.0f, dicom_pixel_to_hu(1024, 1.0f, -1024.0f));
     EXPECT_FLOAT_EQ(1536.0f, dicom_pixel_to_hu(512, 2.0f, 512.0f));
 
+    const uint16_t raw_pixels[] = {0, 512, 1024, 2048};
+    float hu_values[4] = {};
+    ASSERT_EQ(0, dicom_pixels_to_hu_batch(raw_pixels, 4, 1.0f, -1024.0f, hu_values));
+    EXPECT_FLOAT_EQ(-1024.0f, hu_values[0]);
+    EXPECT_FLOAT_EQ(-512.0f, hu_values[1]);
+    EXPECT_FLOAT_EQ(0.0f, hu_values[2]);
+    EXPECT_FLOAT_EQ(1024.0f, hu_values[3]);
+    EXPECT_EQ(-1, dicom_pixels_to_hu_batch(nullptr, 4, 1.0f, -1024.0f, hu_values));
+
     const uint16_t modality_lut[] = {0, 100, 250, 400};
     EXPECT_EQ(0, dicom_apply_modality_lut(-5, modality_lut, 4));
     EXPECT_EQ(250, dicom_apply_modality_lut(2, modality_lut, 4));
     EXPECT_EQ(400, dicom_apply_modality_lut(99, modality_lut, 4));
     EXPECT_EQ(7, dicom_apply_modality_lut(7, nullptr, 0));
+}
+
+TEST(SurgicalVideoUnitTest, BatchExUsesPerFrameMetadataAndPreservesOutputFormat) {
+    SurgicalVideoEngine* engine = surgical_engine_create(SURGICAL_LAPAROSCOPIC, false);
+    ASSERT_NE(engine, nullptr);
+
+    EnhancementParams params{};
+    surgical_preset_laparoscopic(&params);
+    params.sharpness = 0.0f;
+    params.edge_strength = 0.0f;
+    params.bloodless_strength = 0.0f;
+    ASSERT_EQ(0, surgical_engine_config(engine, &params));
+
+    const uint32_t width = 4;
+    const uint32_t height = 2;
+    const size_t rgb_bytes = width * height * 3;
+    const size_t yuv422_bytes = width * height * 2;
+
+    std::vector<uint8_t> rgb_frame(rgb_bytes, 0);
+    std::vector<uint8_t> yuv422_frame(yuv422_bytes, 128);
+    for (size_t i = 0; i < rgb_frame.size(); i += 3) {
+        rgb_frame[i + 0] = 32;
+        rgb_frame[i + 1] = 96;
+        rgb_frame[i + 2] = 160;
+    }
+    for (size_t i = 0; i < yuv422_frame.size(); i += 4) {
+        yuv422_frame[i + 0] = 90;
+        yuv422_frame[i + 1] = 128;
+        yuv422_frame[i + 2] = 140;
+        yuv422_frame[i + 3] = 128;
+    }
+
+    std::vector<uint8_t> rgb_out(rgb_bytes, 0);
+    std::vector<uint8_t> yuv_out(rgb_bytes, 0);
+    const uint8_t* frames[] = {rgb_frame.data(), yuv422_frame.data()};
+    uint8_t* outputs[] = {rgb_out.data(), yuv_out.data()};
+    VideoFrameInfo inputs[] = {
+        {width, height, 1, 1, 30.0f, 0.0f, 0.0f},
+        {width, height, 2, 2, 30.0f, 0.0f, 0.0f},
+    };
+    VideoFrameInfo outputs_info[] = {
+        {width, height, 1, 0, 0.0f, 0.0f, 0.0f},
+        {width, height, 0, 0, 0.0f, 0.0f, 0.0f},
+    };
+
+    ASSERT_EQ(2, surgical_engine_process_batch_ex(engine, frames, inputs, 2, outputs, outputs_info));
+    EXPECT_EQ(1u, outputs_info[0].format);
+    EXPECT_EQ(0u, outputs_info[1].format);
+    EXPECT_NE(0u, rgb_out[0]);
+    EXPECT_NE(0u, yuv_out[0]);
+
+    PerformanceStats stats{};
+    ASSERT_EQ(0, surgical_engine_get_stats(engine, &stats));
+    EXPECT_EQ(2u, stats.frames_processed);
+
+    surgical_engine_destroy(engine);
+}
+
+TEST(SurgicalVideoUnitTest, ProcessFrameSupportsYuv422Output) {
+    SurgicalVideoEngine* engine = surgical_engine_create(SURGICAL_ENDOSCOPIC, false);
+    ASSERT_NE(engine, nullptr);
+
+    EnhancementParams params{};
+    surgical_preset_endoscopic(&params);
+    params.sharpness = 0.0f;
+    params.edge_strength = 0.0f;
+    params.bloodless_strength = 0.0f;
+    ASSERT_EQ(0, surgical_engine_config(engine, &params));
+
+    const uint32_t width = 4;
+    const uint32_t height = 2;
+    std::vector<uint8_t> rgb_frame(width * height * 3, 0);
+    for (size_t i = 0; i < rgb_frame.size(); i += 3) {
+        rgb_frame[i + 0] = 180;
+        rgb_frame[i + 1] = 90;
+        rgb_frame[i + 2] = 40;
+    }
+
+    std::vector<uint8_t> yuv422_out(width * height * 2, 0);
+    VideoFrameInfo input_info{width, height, 1, 10, 30.0f, 0.0f, 0.0f};
+    VideoFrameInfo output_info{width, height, 2, 0, 0.0f, 0.0f, 0.0f};
+
+    ASSERT_EQ(0, surgical_engine_process_frame(engine, rgb_frame.data(), &input_info,
+                                               yuv422_out.data(), &output_info));
+    EXPECT_EQ(2u, output_info.format);
+    EXPECT_NE(0u, yuv422_out[0]);
+    EXPECT_NE(0u, yuv422_out[1]);
+
+    surgical_engine_destroy(engine);
 }
 
 TEST(ColorAndGsdfUnitTest, PValueAndBatchLutApplication) {

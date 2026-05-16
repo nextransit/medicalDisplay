@@ -260,6 +260,21 @@ int dicom_read_pixels(DICOM_Dataset dataset, DICOM_PixelData* pixel_info);
 float dicom_pixel_to_hu(int raw_pixel, float slope, float intercept);
 
 /**
+ * @brief Batch convert raw pixels to HU values
+ * @param raw_pixels Input raw pixel array
+ * @param count Pixel count
+ * @param slope Rescale slope
+ * @param intercept Rescale intercept
+ * @param hu_values Output HU array
+ * @return 0 on success, -1 on invalid input
+ */
+int dicom_pixels_to_hu_batch(const uint16_t* raw_pixels,
+                             size_t count,
+                             float slope,
+                             float intercept,
+                             float* hu_values);
+
+/**
  * @brief Apply modality LUT to raw pixel
  * @param raw_pixel Raw pixel value
  * @param lut_data Modality LUT data
