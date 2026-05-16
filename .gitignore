@@ -1,10 +1,6 @@
-# Build directories
+# Build directories (all build* variants)
+build*/
 build-*/
-build/
-build-dev/
-build-cloud-check/
-build-llvm/
-
 # CMake
 CMakeFiles/
 CMakeCache.txt
@@ -34,3 +30,12 @@ Testing/
 # OS
 .DS_Store
 *.log
+
+# Secrets
+.env.github
+.env.*
+
+# Internal tooling
+.cache/
+.sisyphus/
+tools/
