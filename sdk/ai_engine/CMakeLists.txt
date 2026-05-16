@@ -11,6 +11,7 @@ target_include_directories(medicaldisplay_ai INTERFACE
 if(UNIX AND NOT ANDROID)
     target_sources(medicaldisplay_ai INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ai_engine_impl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/onnx_backend.cpp
     )
 endif()
 
@@ -49,5 +50,14 @@ if(LINUX AND CMAKE_CUDA_COMPILER)
     if(TensorRT_FOUND)
         target_link_libraries(medicaldisplay_ai INTERFACE ${TENSORRT_LIBRARIES})
         target_compile_definitions(medicaldisplay_ai INTERFACE AI_GPU_TENSORRT)
+    endif()
+endif()
+
+# ONNX Runtime support
+if(NOT AI_GPU_TENSORRT AND NOT AI_GPU_INTEL AND NOT AI_NPU_RKNN)
+    find_package(ONNXRuntime QUIET)
+    if(ONNXRuntime_FOUND)
+        target_link_libraries(medicaldisplay_ai INTERFACE ONNXRuntime::ONNXRuntime)
+        target_compile_definitions(medicaldisplay_ai INTERFACE AI_BACKEND_ONNXRUNTIME)
     endif()
 endif()

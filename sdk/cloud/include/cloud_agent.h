@@ -10,6 +10,55 @@ extern "C" {
 #endif
 
 // ============================================================================
+// 审计日志与 PHI 脱敏
+// ============================================================================
+typedef enum {
+    AUDIT_ACTION_CONNECT,
+    AUDIT_ACTION_DISCONNECT,
+    AUDIT_ACTION_REGISTER,
+    AUDIT_ACTION_UPDATE_DOWNLOAD,
+    AUDIT_ACTION_UPDATE_APPLY,
+    AUDIT_ACTION_ROLLBACK,
+    AUDIT_ACTION_COMMAND_RECV,
+    AUDIT_ACTION_QC_REPORT,
+    AUDIT_ACTION_CALIBRATION_UPLOAD,
+    AUDIT_ACTION_MODEL_DOWNLOAD,
+    AUDIT_ACTION_FEDERATED_UPLOAD
+} CloudAuditAction;
+
+typedef struct {
+    char        timestamp[32];
+    CloudAuditAction action;
+    char        device_id[64];
+    char        user_id[64];
+    char        result[32];
+    char        details[512];
+} CloudAuditLog;
+
+typedef void (*CloudAuditCallback)(const CloudAuditLog* log, void* userdata);
+
+// Forward declaration
+typedef struct CloudAgent CloudAgent;
+
+/**
+ * 设置审计日志回调
+ * @param agent Agent句柄
+ * @param callback 回调函数
+ * @param userdata 用户数据
+ */
+void cloud_agent_set_audit_callback(CloudAgent* agent, CloudAuditCallback callback, void* userdata);
+
+/**
+ * PHI 脱敏：将敏感信息替换为哈希标识符
+ * @param input 输入字符串
+ * @param output 输出缓冲区
+ * @param buffer_size 缓冲区大小
+ * @param preserve_suffix 保留后缀字符数
+ */
+void cloud_agent_sanitize_phi(const char* input, char* output, size_t buffer_size, int preserve_suffix);
+
+
+// ============================================================================
 // 云端连接状态
 // ============================================================================
 typedef enum {
@@ -163,6 +212,7 @@ typedef struct {
     int         command_timeout_ms;     // 命令等待超时
     char        staging_dir[512];       // 下载/回滚缓存目录
     char        public_key_path[512];   // OTA/模型验签公钥
+    bool        enforce_signature;      // 强制验签（默认true）
 } CloudAgentConfig;
 
 // ============================================================================

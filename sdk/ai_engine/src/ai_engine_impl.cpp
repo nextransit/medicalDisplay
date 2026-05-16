@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cassert>
 #include <memory>
 
 namespace medical_display {
@@ -72,7 +73,8 @@ static void fill_best_result(const float* scores, AIRecognitionResult* result) {
         }
     }
 
-    // [P0-FIX] 添加边界检查防止越界
+    // [FIX #6] 双重保护：assert 开发期捕获 + 运行时 fallback
+    assert(best_idx >= 0 && best_idx < MODALITY_COUNT);
     if (best_idx < 0 || best_idx >= MODALITY_COUNT) {
         best_idx = MODALITY_UNKNOWN;
         best_score = 0.0f;

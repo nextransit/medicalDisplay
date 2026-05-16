@@ -13,6 +13,7 @@ target_include_directories(medicaldisplay_display PUBLIC
 # Vulkan
 find_package(Vulkan QUIET)
 target_link_libraries(medicaldisplay_display PUBLIC
+    medicaldisplay_dicom
     medicaldisplay_ai
     Threads::Threads
 )

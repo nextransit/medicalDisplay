@@ -2,6 +2,7 @@
 #define MEDICALDISPLAY_MODALITY_STRATEGY_H
 
 #include "ai_engine.h"
+#include "onnx_backend.h"
 
 #include <algorithm>
 #include <cstdint>

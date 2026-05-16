@@ -3,6 +3,8 @@
  * @brief Vulkan-based Medical Image Renderer
  */
 
+#ifdef MEDICALDISPLAY_ENABLE_VULKAN
+
 #include "vulkan_renderer.h"
 #include <cstring>
 #include <cstdio>
@@ -92,6 +94,33 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 static const char* getVkResultString(VkResult result);
 
 // ============================================================================
+// Memory Type Finding
+// ============================================================================
+
+static uint32_t findMemoryType(VkPhysicalDevice physical_device,
+                                VkMemoryRequirements* mem_requirements,
+                                VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties mem_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
+
+    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+        if ((mem_requirements->memoryTypeBits & (1 << i)) &&
+            (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    // Fallback: try any compatible memory type
+    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+        if (mem_requirements->memoryTypeBits & (1 << i)) {
+            return i;
+        }
+    }
+
+    return 0;  // Should never reach here
+}
+
+// ============================================================================
 // Instance Creation
 // ============================================================================
 
@@ -122,11 +151,11 @@ void vulkan_destroy(void* renderer) {
         if (r->texture_sampler) vkDestroySampler(r->device, r->texture_sampler, nullptr);
         if (r->texture_image_view) vkDestroyImageView(r->device, r->texture_image_view, nullptr);
         if (r->texture_image) vkDestroyImage(r->device, r->texture_image, nullptr);
-        if (r->texture_memory) vkDeviceMemoryFree(r->device, r->texture_memory, nullptr);
+        if (r->texture_memory) vkFreeMemory(r->device, r->texture_memory, nullptr);
         
         // Destroy GSDF LUT
         if (r->gsdf_lut_buffer) vkDestroyBuffer(r->device, r->gsdf_lut_buffer, nullptr);
-        if (r->gsdf_lut_memory) vkDeviceMemoryFree(r->device, r->gsdf_lut_memory, nullptr);
+        if (r->gsdf_lut_memory) vkFreeMemory(r->device, r->gsdf_lut_memory, nullptr);
         if (r->gsdf_lut_view) vkDestroyImageView(r->device, r->gsdf_lut_view, nullptr);
         
         // Destroy descriptors
@@ -435,47 +464,49 @@ int vulkan_wait_frame(void* renderer) {
 
 int vulkan_upload_texture(void* renderer, const void* data, uint32_t width, uint32_t height) {
     if (!renderer || !data) return -1;
-    
+
     auto* r = static_cast<VulkanRenderer*>(renderer);
     if (!r->device) return -1;
-    
+
     // Create staging buffer
     VkDeviceSize image_size = width * height * 4;
-    
+
     VkBuffer staging_buffer;
     VkDeviceMemory staging_memory;
-    
+
     VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = image_size;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
+
     if (vkCreateBuffer(r->device, &bufferInfo, nullptr, &staging_buffer) != VK_SUCCESS) {
         return -1;
     }
-    
+
     VkMemoryRequirements mem_requirements;
     vkGetBufferMemoryRequirements(r->device, staging_buffer, &mem_requirements);
-    
+
     VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = mem_requirements.size;
-    allocInfo.memoryTypeIndex = 0;  // Would find proper type
-    
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
     if (vkAllocateMemory(r->device, &allocInfo, nullptr, &staging_memory) != VK_SUCCESS) {
         vkDestroyBuffer(r->device, staging_buffer, nullptr);
         return -1;
     }
-    
+
     vkBindBufferMemory(r->device, staging_buffer, staging_memory, 0);
-    
+
     // Copy data to staging buffer
     void* mapped;
     vkMapMemory(r->device, staging_memory, 0, image_size, 0, &mapped);
     memcpy(mapped, data, image_size);
     vkUnmapMemory(r->device, staging_memory);
-    
+
     // Create image
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -490,30 +521,155 @@ int vulkan_upload_texture(void* renderer, const void* data, uint32_t width, uint
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    
+
     if (vkCreateImage(r->device, &imageInfo, nullptr, &r->texture_image) != VK_SUCCESS) {
         vkDestroyBuffer(r->device, staging_buffer, nullptr);
         vkFreeMemory(r->device, staging_memory, nullptr);
         return -1;
     }
-    
+
     vkGetImageMemoryRequirements(r->device, r->texture_image, &mem_requirements);
-    
+
     allocInfo.allocationSize = mem_requirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(r->physical_device, &mem_requirements,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
     if (vkAllocateMemory(r->device, &allocInfo, nullptr, &r->texture_memory) != VK_SUCCESS) {
         vkDestroyBuffer(r->device, staging_buffer, nullptr);
         vkFreeMemory(r->device, staging_memory, nullptr);
         return -1;
     }
-    
+
     vkBindImageMemory(r->device, r->texture_image, r->texture_memory, 0);
-    
-    // Transition and copy (simplified - would use proper barriers)
-    // vkCmdPipelineBarrier...
-    
+
+    // Create command buffer for layout transition and copy
+    VkCommandPool temp_cmd_pool;
+    VkCommandPoolCreateInfo cmdPoolInfo = {};
+    cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmdPoolInfo.queueFamilyIndex = r->graphics_queue_family;
+    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+    if (vkCreateCommandPool(r->device, &cmdPoolInfo, nullptr, &temp_cmd_pool) != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    VkCommandBuffer temp_cmd_buffer;
+    VkCommandBufferAllocateInfo cmdBufInfo = {};
+    cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdBufInfo.commandPool = temp_cmd_pool;
+    cmdBufInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdBufInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(r->device, &cmdBufInfo, &temp_cmd_buffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(temp_cmd_buffer, &beginInfo);
+
+    // Transition image from UNDEFINED to TRANSFER_DST_OPTIMAL
+    VkImageMemoryBarrier barrier1 = {};
+    barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier1.srcAccessMask = 0;
+    barrier1.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier1.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier1.image = r->texture_image;
+    barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier1.subresourceRange.baseMipLevel = 0;
+    barrier1.subresourceRange.levelCount = 1;
+    barrier1.subresourceRange.baseArrayLayer = 0;
+    barrier1.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(temp_cmd_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier1);
+
+    // Copy from staging buffer to image
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = width;
+    region.bufferImageHeight = height;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyBufferToImage(temp_cmd_buffer, staging_buffer, r->texture_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition to SHADER_READ_ONLY_OPTIMAL for sampling
+    VkImageMemoryBarrier barrier2 = {};
+    barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier2.image = r->texture_image;
+    barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier2.subresourceRange.baseMipLevel = 0;
+    barrier2.subresourceRange.levelCount = 1;
+    barrier2.subresourceRange.baseArrayLayer = 0;
+    barrier2.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(temp_cmd_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier2);
+
+    vkEndCommandBuffer(temp_cmd_buffer);
+
+    // Submit and wait
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &temp_cmd_buffer;
+
+    VkFence temp_fence;
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(r->device, &fenceInfo, nullptr, &temp_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    if (vkQueueSubmit(r->graphics_queue, 1, &submitInfo, temp_fence) != VK_SUCCESS) {
+        vkDestroyFence(r->device, temp_fence, nullptr);
+        vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+        vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+        vkDestroyBuffer(r->device, staging_buffer, nullptr);
+        vkFreeMemory(r->device, staging_memory, nullptr);
+        return -1;
+    }
+
+    vkWaitForFences(r->device, 1, &temp_fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(r->device, temp_fence, nullptr);
+    vkFreeCommandBuffers(r->device, temp_cmd_pool, 1, &temp_cmd_buffer);
+    vkDestroyCommandPool(r->device, temp_cmd_pool, nullptr);
+
     vkDestroyBuffer(r->device, staging_buffer, nullptr);
     vkFreeMemory(r->device, staging_memory, nullptr);
-    
+
     // Create image view
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -525,11 +681,11 @@ int vulkan_upload_texture(void* renderer, const void* data, uint32_t width, uint
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
-    
+
     if (vkCreateImageView(r->device, &viewInfo, nullptr, &r->texture_image_view) != VK_SUCCESS) {
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -553,3 +709,5 @@ static const char* getVkResultString(VkResult result) {
 #ifdef __cplusplus
 }
 #endif
+
+#endif // MEDICALDISPLAY_ENABLE_VULKAN
