@@ -70,11 +70,57 @@ float gsdf_apply_lut(float pixel_value, const float* lut, int lut_size) {
     return lut[low] + t * (lut[high] - lut[low]);
 }
 
+// [P2-OPT] Optimized gsdf_apply_lut_batch with precomputed values and loop unrolling
 void gsdf_apply_lut_batch(const float* input, float* output, int count,
                           const float* lut, int lut_size) {
-    if (!input || !output || !lut) return;
+    if (!input || !output || !lut || count <= 0) return;
 
-    for (int index = 0; index < count; ++index) {
+    // [P2-OPT] Precompute constants outside loop
+    const float inv_lut_size_minus_1 = 1.0f / (float)(lut_size - 1);
+    const int last_index = lut_size - 1;
+
+    // [P2-OPT] Process 4 elements at a time with manual unrolling
+    int index = 0;
+    const int unrolled_count = (count / 4) * 4;
+
+    for (; index < unrolled_count; index += 4) {
+        // Process 4 pixels
+        float scaled0 = input[index + 0] * inv_lut_size_minus_1;
+        float scaled1 = input[index + 1] * inv_lut_size_minus_1;
+        float scaled2 = input[index + 2] * inv_lut_size_minus_1;
+        float scaled3 = input[index + 3] * inv_lut_size_minus_1;
+
+        // Floor + clamp for all 4
+        int low0 = (int)(scaled0 >= 0.0f ? scaled0 : 0.0f);
+        int low1 = (int)(scaled1 >= 0.0f ? scaled1 : 0.0f);
+        int low2 = (int)(scaled2 >= 0.0f ? scaled2 : 0.0f);
+        int low3 = (int)(scaled3 >= 0.0f ? scaled3 : 0.0f);
+
+        low0 = low0 < last_index ? low0 : last_index;
+        low1 = low1 < last_index ? low1 : last_index;
+        low2 = low2 < last_index ? low2 : last_index;
+        low3 = low3 < last_index ? low3 : last_index;
+
+        // Get high index and fractional part for all 4
+        int high0 = low0 + 1 < lut_size ? low0 + 1 : last_index;
+        int high1 = low1 + 1 < lut_size ? low1 + 1 : last_index;
+        int high2 = low2 + 1 < lut_size ? low2 + 1 : last_index;
+        int high3 = low3 + 1 < lut_size ? low3 + 1 : last_index;
+
+        float t0 = scaled0 - (float)low0;
+        float t1 = scaled1 - (float)low1;
+        float t2 = scaled2 - (float)low2;
+        float t3 = scaled3 - (float)low3;
+
+        // Linear interpolation for all 4
+        output[index + 0] = lut[low0] + t0 * (lut[high0] - lut[low0]);
+        output[index + 1] = lut[low1] + t1 * (lut[high1] - lut[low1]);
+        output[index + 2] = lut[low2] + t2 * (lut[high2] - lut[low2]);
+        output[index + 3] = lut[low3] + t3 * (lut[high3] - lut[low3]);
+    }
+
+    // Handle remaining elements
+    for (; index < count; ++index) {
         output[index] = gsdf_apply_lut(input[index], lut, lut_size);
     }
 }
