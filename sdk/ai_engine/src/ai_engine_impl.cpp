@@ -86,45 +86,57 @@ static void fill_best_result(const float* scores, AIRecognitionResult* result) {
 }
 
 float* preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h) {
-    float* output = new float[target_w * target_h];
+    // [P1-OPT] Fused preprocessing: allocate + resize + normalize in single pass
+    float* output = new float[static_cast<size_t>(target_w) * target_h];
+
     const float scale = 1.0f / ((1 << bits) - 1);
+    const float inv_stddev = 1.0f / 0.226f;  // Precompute inverse for multiply
+    const float mean = 0.449f;
     const float x_ratio = static_cast<float>(w) / target_w;
     const float y_ratio = static_cast<float>(h) / target_h;
 
+    // [P1-OPT] Fused loop: resize + normalize in single pass (eliminates separate normalize pass)
     for (int y = 0; y < target_h; ++y) {
         for (int x = 0; x < target_w; ++x) {
             int src_x = std::min(static_cast<int>(x * x_ratio), w - 1);
             int src_y = std::min(static_cast<int>(y * y_ratio), h - 1);
-            output[y * target_w + x] = data[src_y * w + src_x] * scale;
+            float val = data[src_y * w + src_x] * scale;
+            output[y * target_w + x] = (val - mean) * inv_stddev;
         }
     }
 
-    normalize_tensor(output, target_w * target_h, 0.449f, 0.226f);
     return output;
 }
 
 float* preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h) {
-    float* output = new float[target_w * target_h];
+    // [P1-OPT] Fused preprocessing: allocate + resize + normalize in single pass
+    float* output = new float[static_cast<size_t>(target_w) * target_h];
+
+    const float inv_stddev = 1.0f / 0.226f;  // Precompute inverse for multiply
+    const float mean = 0.449f;
     const float x_ratio = static_cast<float>(w) / target_w;
     const float y_ratio = static_cast<float>(h) / target_h;
 
+    // [P1-OPT] Fused loop: resize + grayscale conversion + normalize in single pass
     for (int y = 0; y < target_h; ++y) {
         for (int x = 0; x < target_w; ++x) {
             int src_x = std::min(static_cast<int>(x * x_ratio), w - 1);
             int src_y = std::min(static_cast<int>(y * y_ratio), h - 1);
             const uint8_t* pixel = &data[(src_y * w + src_x) * channels];
-            output[y * target_w + x] =
-                (pixel[0] * 0.299f + pixel[1] * 0.587f + pixel[2] * 0.114f) / 255.0f;
+            float val = (pixel[0] * 0.299f + pixel[1] * 0.587f + pixel[2] * 0.114f) / 255.0f;
+            output[y * target_w + x] = (val - mean) * inv_stddev;
         }
     }
 
-    normalize_tensor(output, target_w * target_h, 0.449f, 0.226f);
     return output;
 }
 
+// [P2-OPT] Optimized normalize_tensor - precompute inverse and use multiply instead of divide
 void normalize_tensor(float* data, int size, float mean, float stddev) {
-    for (int index = 0; index < size; ++index) {
-        data[index] = (data[index] - mean) / stddev;
+    // Precompute inverse to replace expensive division with multiplication
+    const float inv_stddev = 1.0f / stddev;
+    for (int i = 0; i < size; ++i) {
+        data[i] = (data[i] - mean) * inv_stddev;
     }
 }
 
