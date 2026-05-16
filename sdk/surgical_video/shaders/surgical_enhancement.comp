@@ -1,0 +1,188 @@
+#version 450
+#extension GL_ARB_compute_shader : enable
+#extension GL_ARB_shader_storage_buffer_object : enable
+
+// 术野视频实时增强 Compute Shader
+// 目标: 单帧延迟 <20ms @ 1920x1080 (GPU 加速)
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// 输入: RGBA8 格式 (4 字节对齐)
+layout(binding = 0, rgba8) readonly uniform image2D inputImage;
+// 输出: RGBA8 格式
+layout(binding = 1, rgba8) writeonly uniform image2D outputImage;
+// 中间灰度缓冲
+layout(binding = 2, r32f) coherent uniform image2D grayBuffer;
+// 中间边缘缓冲
+layout(binding = 3, r32f) coherent uniform image2D edgeBuffer;
+
+// 统一参数
+layout(std140, binding = 0) uniform EnhancementParams {
+    float brightness;      // 亮度调整 (-1.0 to 1.0)
+    float contrast;        // 对比度 (0.5 to 2.0)
+    float saturation;      // 饱和度 (0.0 to 2.0)
+    float sharpness;       // 锐化强度 (0.0 to 1.0)
+    float edgeStrength;    // 边缘增强强度 (0.0 to 1.0)
+    float edgeThreshold;   // 边缘检测阈值 (0.0 to 1.0)
+    float bloodlessStrength; // 无血术野强度 (0.0 to 1.0)
+    uint enableBloodless;  // 是否启用无血术野
+    uint enablePseudoColor;// 是否启用伪彩色
+    uint enableHDR;        // 是否启用HDR
+    uint mode;             // EnhancementMode (0=None, 1=Tissue, 2=Vascular, 3=Nerve)
+    uint width;            // 帧宽度
+    uint height;           // 帧高度
+    uint padding;
+};
+
+// Sobel 边缘检测 (3x3 算子)
+float sobel(int x, int y) {
+    // 读取 3x3 区域
+    float s00 = imageLoad(grayBuffer, ivec2(x-1, y-1)).r;
+    float s01 = imageLoad(grayBuffer, ivec2(x,   y-1)).r;
+    float s02 = imageLoad(grayBuffer, ivec2(x+1, y-1)).r;
+    float s10 = imageLoad(grayBuffer, ivec2(x-1, y)).r;
+    float s11 = imageLoad(grayBuffer, ivec2(x,   y)).r;
+    float s12 = imageLoad(grayBuffer, ivec2(x+1, y)).r;
+    float s20 = imageLoad(grayBuffer, ivec2(x-1, y+1)).r;
+    float s21 = imageLoad(grayBuffer, ivec2(x,   y+1)).r;
+    float s22 = imageLoad(grayBuffer, ivec2(x+1, y+1)).r;
+
+    // Sobel X 和 Y
+    float gx = -s00 - 2.0*s01 - s02 + s20 + 2.0*s21 + s22;
+    float gy = -s00 - 2.0*s10 - s20 + s02 + 2.0*s12 + s22;
+
+    return sqrt(gx*gx + gy*gy);
+}
+
+// RGB 转灰度
+float rgb_to_gray(vec4 c) {
+    return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+}
+
+// 锐化核 (3x3 反锐化掩模)
+float unsharp_mask(int x, int y) {
+    float sum = 0.0;
+    for (int ky = -1; ky <= 1; ky++) {
+        for (int kx = -1; kx <= 1; kx++) {
+            sum += imageLoad(grayBuffer, ivec2(x+kx, y+ky)).r;
+        }
+    }
+    return sum / 9.0;
+}
+
+// 血流检测 (血红蛋白特征: R 高, G/B 低)
+float detect_blood(vec4 c) {
+    if (c.r > 0.59 && c.g < 0.39 && c.b < 0.39) {
+        return 1.0;  // 确定血液区域
+    }
+    if (c.r > c.g && c.r > c.b && (c.r - c.g) > 0.12) {
+        return 0.5;  // 可能血液区域
+    }
+    return 0.0;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    uint w = width;
+    uint h = height;
+
+    // 边界检查
+    if (pixelCoord.x >= w || pixelCoord.y >= h ||
+        pixelCoord.x < 1 || pixelCoord.y < 1 ||
+        pixelCoord.x >= w-1 || pixelCoord.y >= h-1) {
+        return;
+    }
+
+    // 阶段 1: 读取输入并转灰度
+    vec4 inColor = imageLoad(inputImage, pixelCoord);
+    float gray = rgb_to_gray(inColor);
+    imageStore(grayBuffer, pixelCoord, vec4(gray, 0.0, 0.0, 1.0));
+
+    // 阶段 2: 基础增强 (亮度/对比度/饱和度)
+    vec4 color = inColor;
+
+    // 亮度调整
+    color.rgb += vec3(brightness);
+
+    // 对比度 (以 0.5 为中心)
+    color.rgb = (color.rgb - vec3(0.5)) * vec3(contrast) + vec3(0.5);
+
+    // 饱和度
+    float lum = rgb_to_gray(color);
+    color.rgb = mix(vec3(lum), color.rgb, saturation);
+
+    // Clamp
+    color.rgb = clamp(color.rgb, vec3(0.0), vec3(1.0));
+
+    // 阶段 3: 无血术野处理
+    if (enableBloodless > 0u) {
+        float bloodScore = detect_blood(inColor);
+        if (bloodScore > 0.1) {
+            float suppress = bloodlessStrength * bloodScore;
+            // 抑制红色通道
+            color.r = mix(color.r, color.r * (1.0 - suppress * 0.7), suppress);
+            // 增强绿色通道 (显示更多组织结构)
+            color.g = mix(color.g, color.g * (1.0 + suppress * 0.2), suppress);
+        }
+    }
+
+    // 阶段 4: 边缘检测 (用于后续模式判断)
+    float edgeMagnitude = sobel(int(pixelCoord.x), int(pixelCoord.y));
+    imageStore(edgeBuffer, pixelCoord, vec4(edgeMagnitude, 0.0, 0.0, 1.0));
+
+    // 阶段 5: 边缘增强 (基于模式)
+    if (edgeMagnitude > edgeThreshold) {
+        float strength = edgeStrength;
+
+        switch (mode) {
+            case 1u: // ENHANCE_TISSUE_BOUNDRY
+                strength *= 0.5;
+                color.rgb += vec3(0.06 * strength);  // 提亮边缘
+                break;
+
+            case 2u: // ENHANCE_VASCULAR
+                strength *= 0.6;
+                color.r = mix(color.r, color.r * (1.0 + strength), strength);
+                break;
+
+            case 3u: // ENHANCE_NERVE
+                strength *= 0.4;
+                color.rgb *= (1.0 + strength * 0.5);  // 全面增强
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    // 阶段 6: 锐化
+    if (sharpness > 0.0) {
+        float blur = unsharp_mask(int(pixelCoord.x), int(pixelCoord.y));
+        float sharpened = gray + (gray - blur) * sharpness;
+        float sharpFactor = clamp(sharpened - gray, -0.3, 0.3);
+        color.rgb = clamp(color.rgb + vec3(sharpFactor), vec3(0.0), vec3(1.0));
+    }
+
+    // 伪彩色 (按灰度映射)
+    if (enablePseudoColor > 0u && mode == 3u) {
+        float g = gray;
+        vec3 pseudoColor;
+        if (g < 0.33) {
+            pseudoColor = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), g / 0.33);
+        } else if (g < 0.67) {
+            pseudoColor = mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (g-0.33)/0.34);
+        } else {
+            pseudoColor = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (g-0.67)/0.33);
+        }
+        color.rgb = mix(color.rgb, pseudoColor, 0.3);
+    }
+
+    // HDR 色调映射 (简单版)
+    if (enableHDR > 0u) {
+        // Reinhard 色调映射
+        color.rgb = color.rgb / (color.rgb + vec3(1.0));
+    }
+
+    // 写输出
+    imageStore(outputImage, pixelCoord, color);
+}

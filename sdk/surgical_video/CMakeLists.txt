@@ -1,6 +1,7 @@
 # Surgical Video Enhancement Module
 add_library(medicaldisplay_surgical STATIC
     src/surgical_video.cpp
+    src/gpu_pipeline_cpu_fallback.cpp
 )
 
 target_include_directories(medicaldisplay_surgical PUBLIC
@@ -13,6 +14,27 @@ target_compile_features(medicaldisplay_surgical PUBLIC cxx_std_17)
 target_link_libraries(medicaldisplay_surgical PUBLIC
     Threads::Threads
 )
+
+# GPU Pipeline 后端选择
+# 优先 Vulkan，fallback OpenGL，否则 CPU
+if(ENABLE_VULKAN AND Vulkan_FOUND)
+    target_sources(medicaldisplay_surgical PRIVATE
+        src/gpu_pipeline_vulkan.cpp
+    )
+    target_compile_definitions(medicaldisplay_surgical PUBLIC SURGICAL_GPU_VULKAN)
+    target_link_libraries(medicaldisplay_surgical PRIVATE Vulkan::Vulkan)
+    message(STATUS "Surgical Video: GPU=Vulkan")
+elseif(ENABLE_OPENGL AND OpenGL_FOUND)
+    target_sources(medicaldisplay_surgical PRIVATE
+        src/gpu_pipeline_opengl.cpp
+    )
+    target_compile_definitions(medicaldisplay_surgical PUBLIC SURGICAL_GPU_OPENGL)
+    target_link_libraries(medicaldisplay_surgical PRIVATE OpenGL::GL)
+    message(STATUS "Surgical Video: GPU=OpenGL")
+else()
+    target_compile_definitions(medicaldisplay_surgical PUBLIC SURGICAL_CPU_ONLY)
+    message(STATUS "Surgical Video: GPU=CPU Fallback (<20ms target requires GPU)")
+endif()
 
 if(MSVC)
     target_compile_options(medicaldisplay_surgical PRIVATE /W4)
@@ -27,3 +49,6 @@ install(TARGETS medicaldisplay_surgical
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/medicaldisplay/surgical
         FILES_MATCHING PATTERN "*.h")
+
+install(DIRECTORY shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/medicaldisplay/shaders/surgical
+        FILES_MATCHING PATTERN "*.glsl" PATTERN "*.comp" PATTERN "*.spv")
