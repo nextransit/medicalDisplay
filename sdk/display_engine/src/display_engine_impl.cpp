@@ -180,6 +180,10 @@ float display_jnd_to_luminance(float jnd) {
 static thread_local std::unique_ptr<float[]> gsdf_temp_buffer;
 static thread_local size_t gsdf_temp_size = 0;
 
+// [P2-OPT] Thread-local buffer for 3D LUT conversion
+static thread_local std::unique_ptr<uint16_t[]> lut3d_temp_buffer;
+static thread_local size_t lut3d_temp_size = 0;
+
 void display_generate_gsdf_lut(float ambient_luminance, float target_luminance,
                                 int bit_depth, uint16_t* output) {
     if (!output) return;
@@ -653,17 +657,34 @@ int display_engine_set_window_level(DisplayEngine* engine, float center, float w
     return 0;
 }
 
+// [P2-OPT] Optimized 3D LUT conversion with thread-local buffer and fast clamp/round
 int display_engine_apply_3d_lut(DisplayEngine* engine, const float* lut, int size) {
     if (!engine || !lut || size <= 1) {
         return -1;
     }
 
-    std::vector<uint16_t> converted(static_cast<size_t>(size) * static_cast<size_t>(size) * static_cast<size_t>(size) * 4u, 0);
     const size_t voxel_count = static_cast<size_t>(size) * static_cast<size_t>(size) * static_cast<size_t>(size);
+    const size_t required_size = voxel_count * 4u;
+
+    // [P2-OPT] Reuse thread-local buffer
+    if (lut3d_temp_size < required_size) {
+        lut3d_temp_size = required_size * 2;
+        lut3d_temp_buffer = std::make_unique<uint16_t[]>(lut3d_temp_size);
+    }
+
+    uint16_t* converted = lut3d_temp_buffer.get();
+
+    // [P2-OPT] Precompute constants and use fast clamp
+    const float scale = 4095.0f;
     for (size_t index = 0; index < voxel_count; ++index) {
-        converted[index * 4u + 0u] = static_cast<uint16_t>(std::round(std::max(0.0f, std::min(1.0f, lut[index * 3u + 0u])) * 4095.0f));
-        converted[index * 4u + 1u] = static_cast<uint16_t>(std::round(std::max(0.0f, std::min(1.0f, lut[index * 3u + 1u])) * 4095.0f));
-        converted[index * 4u + 2u] = static_cast<uint16_t>(std::round(std::max(0.0f, std::min(1.0f, lut[index * 3u + 2u])) * 4095.0f));
+        // [P2-OPT] Fast clamp: x < 0 ? 0 : (x > 1 ? 1 : x)
+        auto fast_clamp = [](float x) -> float {
+            return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+        };
+        // [P2-OPT] Use lroundf instead of std::round (faster) and inline clamp
+        converted[index * 4u + 0u] = static_cast<uint16_t>(lroundf(fast_clamp(lut[index * 3u + 0u]) * scale));
+        converted[index * 4u + 1u] = static_cast<uint16_t>(lroundf(fast_clamp(lut[index * 3u + 1u]) * scale));
+        converted[index * 4u + 2u] = static_cast<uint16_t>(lroundf(fast_clamp(lut[index * 3u + 2u]) * scale));
         converted[index * 4u + 3u] = 4095u;
     }
 
@@ -671,7 +692,7 @@ int display_engine_apply_3d_lut(DisplayEngine* engine, const float* lut, int siz
         static_cast<uint32_t>(size),
         static_cast<uint32_t>(size),
         static_cast<uint32_t>(size),
-        converted.data()
+        converted
     };
     return display_load_3d_lut(engine->device, &internal_lut);
 }
