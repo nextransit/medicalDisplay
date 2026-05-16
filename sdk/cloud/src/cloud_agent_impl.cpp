@@ -166,6 +166,22 @@ static bool ensure_directory(const std::string& path) {
     if (path.empty()) {
         return false;
     }
+
+    // [P0-FIX] 拒绝 shell 元字符和路径遍历
+    const char* dangerous_chars = "\"'`;$()|<>&\\";
+    for (const char* p = dangerous_chars; *p; ++p) {
+        if (path.find(*p) != std::string::npos) {
+            fprintf(stderr, "[SECURITY] ensure_directory: dangerous char '%c' in path\n", *p);
+            return false;
+        }
+    }
+
+    // 拒绝路径遍历
+    if (path.find("..") != std::string::npos) {
+        fprintf(stderr, "[SECURITY] ensure_directory: '..' not allowed in path\n");
+        return false;
+    }
+
     // 尝试直接创建（大多数情况）
     if (::mkdir(path.c_str(), 0755) == 0) {
         return true;
