@@ -88,9 +88,9 @@ int display_apply_config(Display_Device device,
 **配置示例 (CT):**
 ```c
 Display_Config config = {
-    .color_space = DISPLAY_COLORSPACE_DICOM_GSDF,
+    .color_space = COLOR_SPACE_DICOM_GSDF,
     .gsdf_profile = DISPLAY_GSDF_CT,
-    .gamma = DISPLAY_GAMMA_DICOM,
+    .gamma = DISPLAY_GSDF_DICOM,
     .window_width = 400,
     .window_center = 40,
     .enable_gsdf = true,
@@ -222,31 +222,36 @@ typedef struct {
 
 ```c
 typedef enum {
-    AI_MODALITY_UNKNOWN = 0,
-    AI_MODALITY_CT,           // CT
-    AI_MODALITY_MR,           // MRI
-    AI_MODALITY_DX,           // Digital Radiography
-    AI_MODALITY_CR,           // CR
-    AI_MODALITY_US,           // Ultrasound
-    AI_MODALITY_PT,           // PET
-    AI_MODALITY_ES,           // Endoscopy
-    AI_MODALITY_SM,           // Pathology
-    AI_MODALITY_SV            // Surgical Video
-} AI_ModalityType;
+    MODALITY_UNKNOWN = 0,
+    MODALITY_CT,           // 计算机断层扫描
+    MODALITY_MR,           // 磁共振成像
+    MODALITY_DX,           // 数字X射线
+    MODALITY_CR,           // 计算机X射线
+    MODALITY_US,           // 超声
+    MODALITY_ES,           // 内窥镜
+    MODALITY_SM,           // 数字病理
+    MODALITY_PT,           // PET
+    MODALITY_XA,           // X射线血管造影
+    MODALITY_RF,           // 放射透视
+    MODALITY_OP,           // 眼科摄影
+    MODALITY_SURGICAL,     // 术野视频
+    MODALITY_COUNT
+} ModalityType;
 ```
 
 ### Display_ColorSpace
 
 ```c
 typedef enum {
-    DISPLAY_COLORSPACE_sRGB = 0,
-    DISPLAY_COLORSPACE_DCI_P3,
-    DISPLAY_COLORSPACE_Rec709,
-    DISPLAY_COLORSPACE_Rec2020,
-    DISPLAY_COLORSPACE_DICOM_GSDF,    // 医疗灰阶
-    DISPLAY_COLORSPACE_BT2100_HLG,
-    DISPLAY_COLORSPACE_BT2100_PQ
-} Display_ColorSpace;
+    COLOR_SPACE_sRGB = 0,
+    COLOR_SPACE_DCI_P3,
+    COLOR_SPACE_Rec709,
+    COLOR_SPACE_Rec2020,
+    COLOR_SPACE_AdobeRGB,
+    COLOR_SPACE_DICOM_GSDF,    // 医疗灰阶
+    COLOR_SPACE_NATIVE,
+    COLOR_SPACE_COUNT
+} ColorSpace;
 ```
 
 ### Result Codes
