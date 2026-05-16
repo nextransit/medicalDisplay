@@ -355,7 +355,9 @@ int surgical_engine_process_frame(SurgicalVideoEngine* engine,
     
     rgb_to_yuv(temp_rgb.data(), yuv.data(), pixel_count);
     
-    if (output_info && output_info->format == 0) {
+    // output_info 可能为 NULL，提取 format 前必须判空
+    int out_fmt = output_info ? (int)output_info->format : 1;  // 默认为 RGB
+    if (out_fmt == 0) {
         std::memcpy(output, yuv.data(), pixel_count * 3);
     } else {
         yuv_to_rgb(yuv.data(), output, pixel_count);
