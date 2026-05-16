@@ -48,7 +48,31 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(medical_demo_support PUBLIC m)
 endif()
 
+# Basic demos
 foreach(target_name medical_display_demo dicom_receiver multi_display_demo gsdf_calibration_demo cloud_demo)
     add_executable(${target_name} ${target_name}.cpp)
     target_link_libraries(${target_name} PRIVATE medical_demo_support Threads::Threads)
 endforeach()
+
+# Predictive maintenance demo
+add_executable(predictive_maintenance_demo predictive_maintenance_demo.cpp)
+target_link_libraries(predictive_maintenance_demo PRIVATE
+    Threads::Threads
+    medicaldisplay_predictive
+    medicaldisplay_common
+    medicaldisplay_simd
+)
+target_include_directories(predictive_maintenance_demo PRIVATE
+    ${MEDICALDISPLAY_SDK_ROOT}/predictive_maintenance/include
+    ${MEDICALDISPLAY_SDK_ROOT}/common/include
+)
+
+# Surgical video demo
+add_executable(surgical_video_demo surgical_video_demo.cpp)
+target_link_libraries(surgical_video_demo PRIVATE
+    Threads::Threads
+    medicaldisplay_surgical
+)
+target_include_directories(surgical_video_demo PRIVATE
+    ${MEDICALDISPLAY_SDK_ROOT}/surgical_video/include
+)

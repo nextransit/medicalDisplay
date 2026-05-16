@@ -1,0 +1,74 @@
+{
+  "pipeline_name": "medical_display_hdr",
+  "api_version": "1.3",
+  "render_pass": {
+    "attachments": [
+      {
+        "format": "RGBA16_SFLOAT",
+        "samples": 1,
+        "load_op": "clear",
+        "store_op": "store",
+        "initial_layout": "undefined",
+        "final_layout": "shader_read_only"
+      }
+    ],
+    "depth_attachment": null,
+    "color_attachment_count": 1
+  },
+  "shaders": {
+    "vertex": "shaders/medical_render.vert.spv",
+    "fragment": "shaders/hdr_tonemapping.frag.spv",
+    "compute": "shaders/hdr_tonemapping.glsl"
+  },
+  "descriptor_sets": [
+    {
+      "set": 0,
+      "bindings": [
+        {"binding": 0, "type": "sampler", "count": 1, "stages": ["fragment", "compute"]},
+        {"binding": 1, "type": "sampled_image", "count": 1, "stages": ["fragment"]},
+        {"binding": 2, "type": "sampled_image", "count": 1, "stages": ["fragment", "compute"]},
+        {"binding": 3, "type": "storage_image", "count": 1, "stages": ["compute"]},
+        {"binding": 4, "type": "uniform_buffer", "count": 1, "stages": ["fragment", "compute"]}
+      ]
+    },
+    {
+      "set": 1,
+      "bindings": [
+        {"binding": 0, "type": "uniform_buffer", "count": 1, "stages": ["fragment"]}
+      ]
+    }
+  ],
+  "push_constants": {
+    "size": 128,
+    "stages": ["fragment", "compute"]
+  },
+  "viewport": {
+    "width": 3840,
+    "height": 2160
+  },
+  "scissor": {
+    "extent": {"width": 3840, "height": 2160}
+  },
+  "blend": {
+    "logic_op": null,
+    "attachments": [
+      {
+        "blend_enable": true,
+        "src_color_blend_factor": "src_alpha",
+        "dst_color_blend_factor": "one_minus_src_alpha",
+        "color_blend_op": "add",
+        "src_alpha_blend_factor": "one",
+        "dst_alpha_blend_factor": "one_minus_src_alpha",
+        "alpha_blend_op": "add"
+      }
+    ]
+  },
+  "dynamic_states": ["viewport", "scissor"],
+  "features": {
+    "sampler_with_content_region": true,
+    "descriptor_binding_variable_descriptor_count": true,
+    "runtime_descriptor_array": true,
+    "mutable_descriptor_type": true,
+    "vertex_pipeline_storage_buffer": false
+  }
+}

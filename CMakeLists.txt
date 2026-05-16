@@ -65,6 +65,11 @@ add_subdirectory(sdk/ai_engine)
 add_subdirectory(sdk/display_engine)
 add_subdirectory(sdk/dicom)
 add_subdirectory(sdk/cloud)
+add_subdirectory(sdk/multimodal)
+add_subdirectory(sdk/multiscreen)
+add_subdirectory(sdk/predictive_maintenance)
+add_subdirectory(sdk/federated)
+add_subdirectory(sdk/surgical_video)
 
 # Platform-specific
 if(BUILD_PLATFORM_LINUX OR (CMAKE_SYSTEM_NAME MATCHES "Linux"))
