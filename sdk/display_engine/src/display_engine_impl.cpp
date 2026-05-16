@@ -33,8 +33,7 @@ static const float GSDF_COEFFICIENTS[7] = {
     -2.5468404e-3f
 };
 
-#define GSDF_L_MIN 0.001f
-#define GSDF_L_MAX 4000.0f
+// GSDF_L_MIN and GSDF_L_MAX are defined in dicom_gsdf.h
 
 // ============================================================================
 // Internal Structures
@@ -116,37 +115,62 @@ static int apply_public_config(DisplayEngine* engine) {
 // ============================================================================
 
 float display_luminance_to_jnd(float luminance) {
-    float L = std::max(GSDF_L_MIN, std::min(GSDF_L_MAX, luminance));
-    float lnL = std::log(L);
-    
-    float Jnd = GSDF_COEFFICIENTS[0] +
-                GSDF_COEFFICIENTS[1] * L +
-                GSDF_COEFFICIENTS[2] * L * L +
-                GSDF_COEFFICIENTS[3] * L * L * L +
-                GSDF_COEFFICIENTS[4] * std::sqrt(L) +
-                GSDF_COEFFICIENTS[5] * std::pow(L, 0.25f) +
-                GSDF_COEFFICIENTS[6] * lnL;
-    
-    return Jnd;
+    float L = std::max(static_cast<float>(GSDF_L_MIN), std::min(static_cast<float>(GSDF_L_MAX), luminance));
+    float log10L = std::log10(L);
+    float log10L2 = log10L * log10L;
+    float log10L3 = log10L2 * log10L;
+    float log10L4 = log10L3 * log10L;
+    float log10L5 = log10L4 * log10L;
+    float log10L6 = log10L5 * log10L;
+
+    // DICOM Part 14 GSDF: log10(JND) = a + b*log10(L) + c*(log10(L))^2 + ...
+    float log10Jnd = GSDF_COEFFICIENTS[0] +
+                     GSDF_COEFFICIENTS[1] * log10L +
+                     GSDF_COEFFICIENTS[2] * log10L2 +
+                     GSDF_COEFFICIENTS[3] * log10L3 +
+                     GSDF_COEFFICIENTS[4] * log10L4 +
+                     GSDF_COEFFICIENTS[5] * log10L5 +
+                     GSDF_COEFFICIENTS[6] * log10L6;
+
+    return std::pow(10.0f, log10Jnd);
 }
 
 float display_jnd_to_luminance(float jnd) {
     // Newton-Raphson iteration to solve inverse GSDF
     float L = 100.0f;  // Initial guess
-    
+
     for (int i = 0; i < 10; i++) {
-        float f = display_luminance_to_jnd(L) - jnd;
+        float log10L = std::log10(std::max(static_cast<float>(GSDF_L_MIN), L));
+        float log10L2 = log10L * log10L;
+        float log10L3 = log10L2 * log10L;
+        float log10L4 = log10L3 * log10L;
+        float log10L5 = log10L4 * log10L;
+        float log10L6 = log10L5 * log10L;
+
+        // Compute log10(JND(L)) - jnd
+        float log10Jnd = GSDF_COEFFICIENTS[0] +
+                         GSDF_COEFFICIENTS[1] * log10L +
+                         GSDF_COEFFICIENTS[2] * log10L2 +
+                         GSDF_COEFFICIENTS[3] * log10L3 +
+                         GSDF_COEFFICIENTS[4] * log10L4 +
+                         GSDF_COEFFICIENTS[5] * log10L5 +
+                         GSDF_COEFFICIENTS[6] * log10L6;
+        float f = log10Jnd - std::log10(jnd);
+
+        // Derivative of log10(JND) w.r.t. log10(L)
         float df = GSDF_COEFFICIENTS[1] +
-                   2.0f * GSDF_COEFFICIENTS[2] * L +
-                   3.0f * GSDF_COEFFICIENTS[3] * L * L +
-                   0.5f * GSDF_COEFFICIENTS[4] / std::sqrt(L) +
-                   0.25f * GSDF_COEFFICIENTS[5] / std::pow(L, 0.75f) +
-                   GSDF_COEFFICIENTS[6] / L;
-        
-        L = L - f / df;
-        L = std::max(GSDF_L_MIN, std::min(GSDF_L_MAX, L));
+                   2.0f * GSDF_COEFFICIENTS[2] * log10L +
+                   3.0f * GSDF_COEFFICIENTS[3] * log10L2 +
+                   4.0f * GSDF_COEFFICIENTS[4] * log10L3 +
+                   5.0f * GSDF_COEFFICIENTS[5] * log10L4 +
+                   6.0f * GSDF_COEFFICIENTS[6] * log10L5;
+
+        // Newton step in log10 space
+        log10L = log10L - f / df;
+        L = std::pow(10.0f, log10L);
+        L = std::max(static_cast<float>(GSDF_L_MIN), std::min(static_cast<float>(GSDF_L_MAX), L));
     }
-    
+
     return L;
 }
 

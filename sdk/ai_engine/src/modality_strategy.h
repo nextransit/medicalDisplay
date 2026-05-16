@@ -10,6 +10,7 @@
 #include <list>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace medical_display {
 
@@ -18,13 +19,64 @@ float* preprocess_image(const uint8_t* data, int w, int h, int channels, int tar
 void normalize_tensor(float* data, int size, float mean, float std);
 uint64_t hash_metadata_key(const char* modality, const char* series, int body_part);
 
-class ModelRunner {
+/**
+ * ModalityClassifier - ONNX Runtime based modality classification with fallback
+ *
+ * Uses ONNX Runtime for AI inference when:
+ * - AI_BACKEND_ONNXRUNTIME is defined (ONNX Runtime available)
+ * - Model file is specified in config.model_path
+ *
+ * Falls back to rule-based detection when ONNX model unavailable.
+ */
+class ModalityClassifier {
 public:
-    static std::unique_ptr<ModelRunner> Create(const AIEngineConfig& config) {
-        return std::unique_ptr<ModelRunner>(new ModelRunner(config));
+    static std::unique_ptr<ModalityClassifier> Create(const AIEngineConfig& config) {
+        auto classifier = std::unique_ptr<ModalityClassifier>(new ModalityClassifier(config));
+
+        // Try to create ONNX backend if model path is configured
+        if (config.model_path[0] != '\0') {
+            classifier->onnx_backend_ = ONNXBackend::Create(config.model_path, config.use_gpu);
+        }
+
+        return classifier;
     }
 
-    int Run(const float* input_buffer, float* scores, int score_count) {
+    /**
+     * Run inference to classify modality
+     * @param input_buffer Preprocessed input tensor
+     * @param input_size Size of input buffer
+     * @param scores Output scores for each modality
+     * @param score_count Number of modalities (should be MODALITY_COUNT)
+     * @return 0 success, -1 failure (will use fallback)
+     */
+    int Run(const float* input_buffer, int input_size, float* scores, int score_count) {
+        if (!input_buffer || !scores || score_count <= 0) {
+            return -1;
+        }
+
+        // Try ONNX inference first
+        if (onnx_backend_ && onnx_backend_->IsValid()) {
+            std::vector<float> output(score_count, 0.0f);
+            int ret = onnx_backend_->Run(input_buffer, input_size, output.data(), score_count);
+            if (ret == 0) {
+                std::copy(output.begin(), output.begin() + score_count, scores);
+                return 0;
+            }
+        }
+
+        // Fallback to rule-based detection
+        return RunRuleBased(input_buffer, scores, score_count);
+    }
+
+    bool HasONNXModel() const { return onnx_backend_ && onnx_backend_->IsValid(); }
+
+private:
+    explicit ModalityClassifier(const AIEngineConfig& config) : config_(config) {}
+
+    /**
+     * Rule-based fallback detection based on image statistics
+     */
+    int RunRuleBased(const float* input_buffer, float* scores, int score_count) {
         if (!input_buffer || !scores || score_count <= 0) {
             return -1;
         }
@@ -65,10 +117,41 @@ public:
         return 0;
     }
 
+    AIEngineConfig config_;
+    std::unique_ptr<ONNXBackend> onnx_backend_;
+};
+
+class ModelRunner {
+public:
+    static std::unique_ptr<ModelRunner> Create(const AIEngineConfig& config) {
+        return std::unique_ptr<ModelRunner>(new ModelRunner(config));
+    }
+
+    int Run(const float* input_buffer, float* scores, int score_count) {
+        if (!input_buffer || !scores || score_count <= 0) {
+            return -1;
+        }
+
+        // Use ONNX classifier with fallback to rule-based
+        if (!classifier_) {
+            classifier_ = ModalityClassifier::Create(config_);
+        }
+
+        if (classifier_) {
+            return classifier_->Run(input_buffer, config_.input_width * config_.input_height,
+                                    scores, score_count);
+        }
+
+        return -1;
+    }
+
+    bool HasONNXModel() const { return classifier_ && classifier_->HasONNXModel(); }
+
 private:
     explicit ModelRunner(const AIEngineConfig& config) : config_(config) {}
 
     AIEngineConfig config_;
+    std::unique_ptr<ModalityClassifier> classifier_;
 };
 
 class MetadataCache {

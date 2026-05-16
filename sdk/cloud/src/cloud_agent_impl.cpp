@@ -88,6 +88,7 @@ struct CloudAgent {
     std::atomic<bool> registered {false};
 
     mutable std::mutex mutex;
+    mutable std::mutex topics_mutex;
     std::condition_variable ack_cv;
     std::condition_variable command_cv;
 
@@ -100,6 +101,11 @@ struct CloudAgent {
 
     CloudEventCallback event_callback = nullptr;
     void* event_userdata = nullptr;
+
+    CloudAuditCallback audit_callback = nullptr;
+    void* audit_userdata = nullptr;
+    std::deque<CloudAuditLog> audit_queue;
+    std::mutex audit_mutex;
 
     std::string staging_dir;
     std::string last_update_download_path;
@@ -533,6 +539,7 @@ static void emit_event(CloudAgent* agent, CloudEventType type, void* data = null
 }
 
 static std::string get_ack_topic_for_request(CloudAgent* agent, const std::string& topic) {
+    std::lock_guard<std::mutex> lock(agent->topics_mutex);
     if (topic == agent->topics.register_req) return agent->topics.register_resp;
     if (topic == agent->topics.ota_check_req) return agent->topics.ota_check_resp;
     if (topic == agent->topics.model_check_req) return agent->topics.model_check_resp;
@@ -637,20 +644,27 @@ static std::string serialize_device_registration(const CloudAgentConfig& config,
 }
 
 static std::string serialize_heartbeat(const CloudAgent* agent) {
+    std::string device_id;
+    std::string firmware_version;
+    {
+        std::lock_guard<std::mutex> lock(agent->mutex);
+        device_id = agent->device_info.device_id;
+        firmware_version = agent->device_info.firmware_version;
+    }
 #ifdef HAS_NLOHMANN_JSON
     Json json = {
-        {"device_id", agent->device_info.device_id},
+        {"device_id", device_id},
         {"registered", agent->registered.load()},
         {"state", static_cast<int>(agent->state.load())},
-        {"firmware_version", agent->device_info.firmware_version},
+        {"firmware_version", firmware_version},
         {"timestamp", iso8601_now()}
     };
     return json_dump(json);
 #else
     return build_simple_json(
         {
-            {"device_id", agent->device_info.device_id},
-            {"firmware_version", agent->device_info.firmware_version},
+            {"device_id", device_id},
+            {"firmware_version", firmware_version},
             {"timestamp", iso8601_now()}
         },
         {
@@ -663,9 +677,14 @@ static std::string serialize_heartbeat(const CloudAgent* agent) {
 }
 
 static std::string serialize_telemetry(const CloudAgent* agent, const CloudTelemetry& telemetry) {
+    std::string device_id;
+    {
+        std::lock_guard<std::mutex> lock(agent->mutex);
+        device_id = agent->device_info.device_id;
+    }
 #ifdef HAS_NLOHMANN_JSON
     Json json = {
-        {"device_id", agent->device_info.device_id},
+        {"device_id", device_id},
         {"timestamp", telemetry.timestamp[0] ? telemetry.timestamp : iso8601_now()},
         {"hours_used", telemetry.hours_used},
         {"ai_inference_latency_ms", telemetry.ai_inference_latency_ms},
@@ -681,7 +700,7 @@ static std::string serialize_telemetry(const CloudAgent* agent, const CloudTelem
 #else
     return build_simple_json(
         {
-            {"device_id", agent->device_info.device_id},
+            {"device_id", device_id},
             {"timestamp", telemetry.timestamp[0] ? telemetry.timestamp : iso8601_now()}
         },
         {},
@@ -1013,13 +1032,18 @@ static void subscribe_topics(CloudAgent* agent) {
     if (!agent || !agent->mqtt) {
         return;
     }
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.register_resp.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.ota_check_resp.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.model_check_resp.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.command_req.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.qc_guidance_resp.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.time_sync_resp.c_str(), 1);
-    mosquitto_subscribe(agent->mqtt, nullptr, agent->topics.federated_model_resp.c_str(), 1);
+    TopicSet topics_copy;
+    {
+        std::lock_guard<std::mutex> lock(agent->topics_mutex);
+        topics_copy = agent->topics;
+    }
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.register_resp.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.ota_check_resp.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.model_check_resp.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.command_req.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.qc_guidance_resp.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.time_sync_resp.c_str(), 1);
+    mosquitto_subscribe(agent->mqtt, nullptr, topics_copy.federated_model_resp.c_str(), 1);
 }
 
 static void mqtt_on_connect(struct mosquitto*, void* userdata, int rc) {
@@ -1063,7 +1087,12 @@ static void mqtt_on_message(struct mosquitto*, void* userdata, const mosquitto_m
         message->payload ? static_cast<const char*>(message->payload) : "",
         message->payloadlen > 0 ? static_cast<size_t>(message->payloadlen) : 0);
 
-    if (topic == agent->topics.command_req) {
+    bool is_command_req = false;
+    {
+        std::lock_guard<std::mutex> lock(agent->topics_mutex);
+        is_command_req = (topic == agent->topics.command_req);
+    }
+    if (is_command_req) {
         CloudCommand command {};
         if (parse_command_message(payload, &command) == 0) {
             {
@@ -1085,7 +1114,12 @@ static void heartbeat_loop(CloudAgent* agent) {
                                      : kDefaultHeartbeatSeconds);
     while (!agent->stop_threads.load()) {
         if (agent->connected.load() && agent->registered.load()) {
-            publish_message(agent, agent->topics.heartbeat, serialize_heartbeat(agent), 1, false);
+            std::string heartbeat_topic;
+            {
+                std::lock_guard<std::mutex> lock(agent->topics_mutex);
+                heartbeat_topic = agent->topics.heartbeat;
+            }
+            publish_message(agent, heartbeat_topic, serialize_heartbeat(agent), 1, false);
         }
         for (int i = 0; i < interval && !agent->stop_threads.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1110,7 +1144,14 @@ static void telemetry_loop(CloudAgent* agent) {
             }
         }
         if (!batch.empty() && agent->connected.load() && agent->registered.load()) {
-            publish_message(agent, batch.size() == 1 ? agent->topics.telemetry : agent->topics.telemetry_batch,
+            std::string telemetry_topic;
+            std::string telemetry_batch_topic;
+            {
+                std::lock_guard<std::mutex> lock(agent->topics_mutex);
+                telemetry_topic = agent->topics.telemetry;
+                telemetry_batch_topic = agent->topics.telemetry_batch;
+            }
+            publish_message(agent, batch.size() == 1 ? telemetry_topic : telemetry_batch_topic,
                             batch.size() == 1 ? serialize_telemetry(agent, batch.front())
                                               : serialize_telemetry_batch(agent, batch),
                             1,
@@ -1323,6 +1364,49 @@ static int publish_and_wait(CloudAgent* agent,
 
 }  // namespace
 
+// ============================================================================
+// Audit Log Helper
+// ============================================================================
+static void emit_audit_log(CloudAgent* agent, CloudAuditAction action,
+                           const char* result, const char* details) {
+    if (!agent) {
+        return;
+    }
+    CloudAuditLog entry {};
+    std::snprintf(entry.timestamp, sizeof(entry.timestamp), "%s", iso8601_now().c_str());
+    entry.action = action;
+    // Truncate device_id to fit (device_info.device_id is 128, CloudAuditLog.device_id is 64)
+    {
+        const char* src = agent->device_info.device_id[0] ? agent->device_info.device_id : "unknown";
+        std::strncpy(entry.device_id, src, sizeof(entry.device_id) - 1);
+        entry.device_id[sizeof(entry.device_id) - 1] = '\0';
+    }
+    std::snprintf(entry.result, sizeof(entry.result), "%s", result ? result : "unknown");
+    std::snprintf(entry.details, sizeof(entry.details), "%s", details ? details : "");
+
+    CloudAuditCallback callback = nullptr;
+    void* userdata = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(agent->audit_mutex);
+        agent->audit_queue.push_back(entry);
+        callback = agent->audit_callback;
+        userdata = agent->audit_userdata;
+    }
+
+    // Invoke callback if set (outside lock to avoid deadlock)
+    if (callback) {
+        callback(&entry, userdata);
+    }
+}
+
+#ifdef HAS_OPENSSL
+static std::string sha256_string(const std::string& input) {
+    unsigned char digest[SHA256_DIGEST_LENGTH] = {0};
+    SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), digest);
+    return to_hex(digest, SHA256_DIGEST_LENGTH);
+}
+#endif
+
 extern "C" {
 
 CloudAgent* cloud_agent_create(const CloudAgentConfig* config, const DeviceInfo* device_info) {
@@ -1400,11 +1484,13 @@ int cloud_agent_connect(CloudAgent* agent) {
 
     if (mosquitto_connect_async(agent->mqtt, host.c_str(), port, 60) != MOSQ_ERR_SUCCESS) {
         agent->state.store(CLOUD_STATE_ERROR);
+        emit_audit_log(agent, AUDIT_ACTION_CONNECT, "failure", "mqtt_connect_failed");
         return -1;
     }
     if (mosquitto_loop_start(agent->mqtt) != MOSQ_ERR_SUCCESS) {
         mosquitto_disconnect(agent->mqtt);
         agent->state.store(CLOUD_STATE_ERROR);
+        emit_audit_log(agent, AUDIT_ACTION_CONNECT, "failure", "mqtt_loop_start_failed");
         return -1;
     }
 
@@ -1414,6 +1500,7 @@ int cloud_agent_connect(CloudAgent* agent) {
     if (!agent->telemetry_thread.joinable()) {
         agent->telemetry_thread = std::thread(telemetry_loop, agent);
     }
+    emit_audit_log(agent, AUDIT_ACTION_CONNECT, "success", "connected_to_broker");
     return 0;
 #else
     agent->state.store(CLOUD_STATE_CONNECTED);
@@ -1425,6 +1512,7 @@ int cloud_agent_connect(CloudAgent* agent) {
         agent->telemetry_thread = std::thread(telemetry_loop, agent);
     }
     emit_event(agent, CLOUD_EVENT_CONNECTED);
+    emit_audit_log(agent, AUDIT_ACTION_CONNECT, "success", "connected_stub_mode");
     return 0;
 #endif
 }
@@ -1454,6 +1542,7 @@ void cloud_agent_disconnect(CloudAgent* agent) {
     agent->connected.store(false);
     agent->registered.store(false);
     agent->state.store(CLOUD_STATE_DISCONNECTED);
+    emit_audit_log(agent, AUDIT_ACTION_DISCONNECT, "success", "agent_disconnected");
 }
 
 CloudState cloud_agent_get_state(CloudAgent* agent) {
@@ -1483,9 +1572,11 @@ int cloud_agent_register(CloudAgent* agent, const DeviceInfo* device_info) {
                                            ? agent->config.command_timeout_ms
                                            : kDefaultCommandTimeoutMs);
     if (publish_and_wait(agent, agent->topics.register_req, payload, &response, timeout_ms) != 0) {
+        emit_audit_log(agent, AUDIT_ACTION_REGISTER, "failure", "registration_timeout");
         return -1;
     }
     agent->registered.store(true);
+    emit_audit_log(agent, AUDIT_ACTION_REGISTER, "success", "device_registered");
     return 0;
 }
 
@@ -1597,6 +1688,7 @@ int cloud_agent_download_update(CloudAgent* agent,
         return -1;
     }
     if (!agent->config.enable_ota) {
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_DOWNLOAD, "failure", "ota_disabled");
         return -1;
     }
 
@@ -1625,6 +1717,7 @@ int cloud_agent_download_update(CloudAgent* agent,
 
     if (download_file_with_resume(agent, update->download_url, final_path, callback, progress_userdata) != 0) {
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_DOWNLOAD, "failure", "download_failed");
         return -1;
     }
     if (!verify_download(agent, final_path,
@@ -1632,11 +1725,13 @@ int cloud_agent_download_update(CloudAgent* agent,
                          update->signature,
                          agent->config.public_key_path)) {
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_DOWNLOAD, "failure", "verify_failed");
         return -1;
     }
 
     agent->last_update_download_path = final_path;
     emit_event(agent, CLOUD_EVENT_UPDATE_DOWNLOADED, const_cast<UpdateInfo*>(update));
+    emit_audit_log(agent, AUDIT_ACTION_UPDATE_DOWNLOAD, "success", "update_downloaded");
     return 0;
 }
 
@@ -1646,6 +1741,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
         return -1;
     }
     if (agent->last_update_download_path.empty() || !file_exists_cpp(agent->last_update_download_path)) {
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_APPLY, "failure", "download_path_empty");
         return -1;
     }
 
@@ -1655,6 +1751,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
                          update->signature,
                          agent->config.public_key_path)) {
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_APPLY, "failure", "verify_before_apply_failed");
         return -1;
     }
 
@@ -1684,6 +1781,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
     // Step 3: 写入新固件到 inactive bank
     if (!copy_file_binary(agent->last_update_download_path, inactive_bank)) {
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_APPLY, "failure", "copy_to_bank_failed");
         return -1;
     }
 
@@ -1714,6 +1812,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
     if (std::rename(inactive_bank.c_str(), target_path.c_str()) != 0) {
         // rename 失败，emit event
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        emit_audit_log(agent, AUDIT_ACTION_UPDATE_APPLY, "failure", "atomic_rename_failed");
         return -1;
     }
     
@@ -1730,6 +1829,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
     agent->last_update_target_path = target_path;
     copy_cstr(agent->device_info.firmware_version, sizeof(agent->device_info.firmware_version), update->version);
     emit_event(agent, CLOUD_EVENT_UPDATE_READY, const_cast<UpdateInfo*>(update));
+    emit_audit_log(agent, AUDIT_ACTION_UPDATE_APPLY, "success", "update_applied");
     return 0;
 }
 
@@ -2041,6 +2141,50 @@ void cloud_agent_set_event_callback(CloudAgent* agent, CloudEventCallback callba
     std::lock_guard<std::mutex> lock(agent->mutex);
     agent->event_callback = callback;
     agent->event_userdata = userdata;
+}
+
+void cloud_agent_set_audit_callback(CloudAgent* agent, CloudAuditCallback callback, void* userdata) {
+    if (!agent) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(agent->audit_mutex);
+    agent->audit_callback = callback;
+    agent->audit_userdata = userdata;
+}
+
+void cloud_agent_sanitize_phi(const char* input, char* output, size_t buffer_size, int preserve_suffix) {
+    if (!input || !output || buffer_size == 0) {
+        return;
+    }
+
+    output[0] = '\0';
+
+    const std::string in(input);
+    if (in.empty()) {
+        return;
+    }
+
+    // Determine how many chars to preserve from the end
+    const int suffix_len = std::max(0, preserve_suffix);
+    const size_t prefix_len = in.size() > static_cast<size_t>(suffix_len)
+                               ? in.size() - static_cast<size_t>(suffix_len)
+                               : 0;
+
+#ifdef HAS_OPENSSL
+    // Hash the prefix with SHA256
+    const std::string prefix_to_hash = in.substr(0, prefix_len);
+    const std::string hashed_prefix = sha256_string(prefix_to_hash);
+    const std::string suffix = in.substr(in.size() - suffix_len);
+
+    // Truncate hash to fit buffer while keeping suffix
+    const size_t max_hash_len = buffer_size > static_cast<size_t>(suffix_len) + 1 ? buffer_size - static_cast<size_t>(suffix_len) - 1 : 0;
+    const std::string truncated_hash = hashed_prefix.substr(0, max_hash_len);
+
+    std::snprintf(output, buffer_size, "%s%s", truncated_hash.c_str(), suffix.c_str());
+#else
+    // Fallback: just copy input (less secure, but compiles without OpenSSL)
+    std::snprintf(output, buffer_size, "%s", in.c_str());
+#endif
 }
 
 }  // extern "C"

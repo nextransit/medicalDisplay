@@ -121,10 +121,9 @@ target_link_libraries(medical_display_common PUBLIC Threads::Threads)
 if(BUILD_AI_ENGINE)
     set(AI_SOURCES
         ${AI_SOURCE_DIR}/ai_engine_impl.cpp
-        ${AI_SOURCE_DIR}/model_runner.cpp
-        ${AI_SOURCE_DIR}/preprocessing.cpp
+        ${AI_SOURCE_DIR}/onnx_backend.cpp
     )
-    
+
     add_library(medical_display_ai STATIC ${AI_SOURCES})
     target_include_directories(medical_display_ai PUBLIC ${AI_INCLUDE_DIR})
     target_link_libraries(medical_display_ai PUBLIC medical_display_common)
