@@ -40,12 +40,12 @@ struct DICOM_Context; // Forward declaration
 
 struct DICOM_Context {
     FILE* file;
-    
+
     // File metadata
     DICOM_TransferSyntax transfer_syntax;
     bool implicit_vr;
     bool big_endian;
-    
+
     // Pixel data
     uint8_t* pixel_buffer;
     size_t pixel_buffer_size;
@@ -59,7 +59,7 @@ struct DICOM_Context {
     int rows;
     int columns;
     int number_of_frames;
-    
+
     // Metadata
     char modality[16];
     char sop_class_uid[128];
@@ -67,20 +67,24 @@ struct DICOM_Context {
     float window_width;
     float rescale_slope;
     float rescale_intercept;
-    
+
     // LUT data
     uint16_t* modality_lut;
     int modality_lut_entries;
     int modality_lut_first_input;
     int modality_lut_bits;
-    
+
     uint16_t* voi_lut;
     int voi_lut_entries;
-    
+
     // Metadata cache
     DICOM_Element* elements[MAX_METADATA_ELEMENTS];
     int element_count;
     bool metadata_parsed;
+
+    // [P2-OPT] Last accessed element cache for O(1) repeated lookups
+    uint32_t last_tag;
+    DICOM_Element* last_element;
 };
 
 // ============================================================================
@@ -176,9 +180,19 @@ static void add_metadata_element(DICOM_Context* ctx, uint32_t tag, uint8_t* data
     ctx->elements[ctx->element_count++] = elem;
 }
 
+// [P2-OPT] Optimized element lookup with last-accessed cache
 static DICOM_Element* find_metadata_element(DICOM_Context* ctx, uint32_t tag) {
+    // [P2-OPT] Check cache first (most calls are sequential/repeated)
+    if (ctx->last_element && ctx->last_tag == tag) {
+        return ctx->last_element;
+    }
+
+    // Linear search
     for (int i = 0; i < ctx->element_count; i++) {
         if (ctx->elements[i]->tag == tag) {
+            // [P2-OPT] Cache the result for next lookup
+            ctx->last_tag = tag;
+            ctx->last_element = ctx->elements[i];
             return ctx->elements[i];
         }
     }
