@@ -25,6 +25,7 @@
 
 #ifdef PLATFORM_LINUX
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 #ifdef HAS_CURL
@@ -160,16 +161,38 @@ static inline void copy_cstr(char* dest, size_t size, const std::string& src) {
     std::snprintf(dest, size, "%s", src.c_str());
 }
 
-static inline bool ensure_directory(const std::string& path) {
+// [P0-FIX] ensure_directory: 安全的递归目录创建，移除 std::system 命令注入风险
+static bool ensure_directory(const std::string& path) {
     if (path.empty()) {
         return false;
     }
-#ifdef PLATFORM_LINUX
-    std::string command = "mkdir -p \"" + path + "\"";
-    return std::system(command.c_str()) == 0;
-#else
+    // 尝试直接创建（大多数情况）
+    if (::mkdir(path.c_str(), 0755) == 0) {
+        return true;
+    }
+    if (errno == EEXIST) {
+        // 已存在且是目录
+        struct stat st {};
+        if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            return true;
+        }
+        errno = ENOTDIR;  // 路径上有同名文件
+        return false;
+    }
+    if (errno != ENOENT) {
+        return false;  // 权限错误或其他问题
+    }
+    // 递归创建父目录
+    const std::string::size_type pos = path.find_last_of("/\\");
+    if (pos == std::string::npos) {
+        return false;  // 没有父路径
+    }
+    const std::string parent = path.substr(0, pos);
+    if (!ensure_directory(parent)) {
+        return false;
+    }
+    // 再次尝试创建本级目录
     return ::mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
-#endif
 }
 
 static inline bool file_exists_cpp(const std::string& path) {
@@ -186,7 +209,7 @@ static inline size_t file_size_cpp(const std::string& path) {
 }
 
 static inline std::string dirname_of(const std::string& path) {
-    const auto pos = path.find_last_of("/\\");
+    const auto pos = path.find_last_of("/\\\\");
     if (pos == std::string::npos) {
         return ".";
     }
@@ -390,8 +413,14 @@ static std::vector<unsigned char> base64_decode(const std::string& encoded) {
 static bool verify_signature_file(const std::string& file_path,
                                   const std::string& signature_base64,
                                   const std::string& public_key_path) {
-    if (signature_base64.empty() || public_key_path.empty()) {
-        return true;
+    // [P0-FIX] 空签名或空公钥路径在 enforce_signature=true 时必须拒绝
+    if (signature_base64.empty()) {
+        fprintf(stderr, "[SECURITY] verify_signature_file: signature is empty, REJECTED\n");
+        return false;
+    }
+    if (public_key_path.empty()) {
+        fprintf(stderr, "[SECURITY] verify_signature_file: public_key_path is empty, REJECTED\n");
+        return false;
     }
     FILE* key_file = std::fopen(public_key_path.c_str(), "rb");
     if (!key_file) {
@@ -1098,22 +1127,55 @@ static std::string rollback_marker_path(CloudAgent* agent, const std::string& na
     return join_path(agent->staging_dir, name + ".rollback");
 }
 
-static bool verify_download(const std::string& file_path,
+// [P0-FIX] verify_download: agent!=nullptr 时强制要求签名，防止旁路攻击
+static bool verify_download(CloudAgent* agent,
+                            const std::string& file_path,
                             const char* checksum,
                             const char* signature,
                             const std::string& public_key_path) {
 #ifdef HAS_OPENSSL
+    // Step 1: SHA256 checksum 校验（可选）
     if (checksum && checksum[0]) {
         const std::string actual = sha256_file(file_path);
         if (actual.empty() || actual != checksum) {
+            fprintf(stderr, "[SECURITY] verify_download: checksum mismatch for %s\n", file_path.c_str());
             return false;
         }
     }
-    if (signature && signature[0]) {
-        return verify_signature_file(file_path, signature, public_key_path);
+
+    // Step 2: 签名校验（enforce_signature=true 时强制）
+    const bool enforce = !agent || agent->config.enforce_signature;
+    if (enforce) {
+        // 强制验签：signature 或 public_key 缺失 → 拒绝
+        if (!signature || !signature[0]) {
+            fprintf(stderr, "[SECURITY] verify_download: MISSING signature, REJECTED (enforce=true)\n");
+            return false;
+        }
+        if (public_key_path.empty()) {
+            fprintf(stderr, "[SECURITY] verify_download: MISSING public_key_path, REJECTED (enforce=true)\n");
+            return false;
+        }
+        if (!verify_signature_file(file_path, signature, public_key_path)) {
+            fprintf(stderr, "[SECURITY] verify_download: signature verification FAILED for %s\n", file_path.c_str());
+            return false;
+        }
+    } else {
+        // 非强制模式：仅在提供了签名时才验签
+        if (signature && signature[0]) {
+            if (!verify_signature_file(file_path, signature, public_key_path)) {
+                fprintf(stderr, "[SECURITY] verify_download: signature verification FAILED for %s\n", file_path.c_str());
+                return false;
+            }
+        }
     }
     return true;
 #else
+    // 没有 OpenSSL：enforce=true 时拒绝
+    const bool enforce = !agent || agent->config.enforce_signature;
+    if (enforce) {
+        fprintf(stderr, "[SECURITY] verify_download: OpenSSL not available, REJECTED (enforce=true)\n");
+        return false;
+    }
     (void)file_path;
     (void)checksum;
     (void)signature;
@@ -1254,6 +1316,9 @@ CloudAgent* cloud_agent_create(const CloudAgentConfig* config, const DeviceInfo*
 
     auto* agent = new CloudAgent();
     agent->config = *config;
+    // [P0-FIX] 医疗安全强制：enforce_signature 默认为 true（无法关闭）
+    // 这是医疗设备安全的必要条件
+    agent->config.enforce_signature = true;
     if (device_info) {
         agent->device_info = *device_info;
     }
@@ -1455,7 +1520,7 @@ int cloud_agent_download_model(CloudAgent* agent,
         if (download_file_with_resume(agent, model_info->delta_url, delta_path, callback, progress_userdata) == 0) {
             const std::string base_path = deduce_install_target(model_info->install_path, model_info->download_url);
             if (file_exists_cpp(base_path) && apply_delta_file(base_path, delta_path, install_target)) {
-                if (!verify_download(install_target,
+                if (!verify_download(agent, install_target,
                                      model_info->checksum,
                                      model_info->signature,
                                      agent->config.public_key_path)) {
@@ -1470,7 +1535,7 @@ int cloud_agent_download_model(CloudAgent* agent,
     if (download_file_with_resume(agent, model_info->download_url, downloaded_path, callback, progress_userdata) != 0) {
         return -1;
     }
-    if (!verify_download(downloaded_path,
+    if (!verify_download(agent, downloaded_path,
                          model_info->checksum,
                          model_info->signature,
                          agent->config.public_key_path)) {
@@ -1528,7 +1593,7 @@ int cloud_agent_download_update(CloudAgent* agent,
                                                ? update->install_path
                                                : std::string("current_firmware.bin");
             if (file_exists_cpp(current_path) && apply_delta_file(current_path, delta_path, final_path)) {
-                if (!verify_download(final_path,
+                if (!verify_download(agent, final_path,
                                      update->checksum,
                                      update->signature,
                                      agent->config.public_key_path)) {
@@ -1546,7 +1611,7 @@ int cloud_agent_download_update(CloudAgent* agent,
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
         return -1;
     }
-    if (!verify_download(final_path,
+    if (!verify_download(agent, final_path,
                          update->checksum,
                          update->signature,
                          agent->config.public_key_path)) {
@@ -1559,6 +1624,7 @@ int cloud_agent_download_update(CloudAgent* agent,
     return 0;
 }
 
+// [P1-FIX] cloud_agent_apply_update: 双 bank 固件更新 + atomic rename + fsync
 int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool verify_before_apply) {
     if (!agent || !update) {
         return -1;
@@ -1568,7 +1634,7 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
     }
 
     if (verify_before_apply &&
-        !verify_download(agent->last_update_download_path,
+        !verify_download(agent, agent->last_update_download_path,
                          update->checksum,
                          update->signature,
                          agent->config.public_key_path)) {
@@ -1578,14 +1644,71 @@ int cloud_agent_apply_update(CloudAgent* agent, const UpdateInfo* update, bool v
 
     const std::string target_path = deduce_install_target(update->install_path, update->download_url);
     const std::string rollback_path = rollback_marker_path(agent, "firmware");
+    
+    // Step 1: 保存当前版本到 rollback
     if (file_exists_cpp(target_path)) {
         copy_file_binary(target_path, rollback_path);
     }
 
-    if (!copy_file_binary(agent->last_update_download_path, target_path)) {
+    // Step 2: 双 bank 策略
+    const std::string bank_a = target_path + ".bank_a";
+    const std::string bank_b = target_path + ".bank_b";
+    std::string inactive_bank;
+    
+    // 选择非活跃的 bank
+    if (!file_exists_cpp(bank_a)) {
+        inactive_bank = bank_a;
+    } else if (!file_exists_cpp(bank_b)) {
+        inactive_bank = bank_b;
+    } else {
+        // 两个 bank 都存在，使用较旧的
+        inactive_bank = (file_size_cpp(bank_a) < file_size_cpp(bank_b)) ? bank_a : bank_b;
+    }
+
+    // Step 3: 写入新固件到 inactive bank
+    if (!copy_file_binary(agent->last_update_download_path, inactive_bank)) {
         emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
         return -1;
     }
+
+    // Step 4: fsync 确保数据落盘
+#ifdef PLATFORM_LINUX
+    int fd = open(inactive_bank.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+#endif
+
+    // Step 5: Atomic rename
+    if (file_exists_cpp(target_path)) {
+        // 将当前固件移到 backup
+        const std::string backup_path = target_path + ".backup";
+        std::rename(target_path.c_str(), backup_path.c_str());
+#ifdef PLATFORM_LINUX
+        int dir_fd = open(dirname_of(target_path).c_str(), O_RDONLY);
+        if (dir_fd >= 0) {
+            fsync(dir_fd);
+            close(dir_fd);
+        }
+#endif
+    }
+    
+    // atomic rename 新固件
+    if (std::rename(inactive_bank.c_str(), target_path.c_str()) != 0) {
+        // rename 失败，emit event
+        emit_event(agent, CLOUD_EVENT_UPDATE_FAILED);
+        return -1;
+    }
+    
+    // 确保目录元数据同步
+#ifdef PLATFORM_LINUX
+    int dir_fd = open(dirname_of(target_path).c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+#endif
 
     agent->previous_firmware_version = agent->device_info.firmware_version;
     agent->last_update_target_path = target_path;

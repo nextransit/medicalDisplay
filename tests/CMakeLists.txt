@@ -60,6 +60,7 @@ target_include_directories(medicaldisplay_test_support
         ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
         ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
         ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
+        ${MEDICALDISPLAY_ROOT}/sdk/cloud/include
 )
 
 target_compile_features(medicaldisplay_test_support PUBLIC cxx_std_17)
@@ -105,4 +106,8 @@ add_medicaldisplay_gtest(test_drm
 
 add_medicaldisplay_gtest(test_gsdf
     test_gsdf.cpp
+)
+
+add_medicaldisplay_gtest(test_cloud_security
+    test_cloud_security.cpp
 )
