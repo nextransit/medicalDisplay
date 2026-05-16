@@ -111,3 +111,7 @@ add_medicaldisplay_gtest(test_gsdf
 add_medicaldisplay_gtest(test_cloud_security
     test_cloud_security.cpp
 )
+
+add_medicaldisplay_gtest(test_dicom_security
+    test_dicom_security.cpp
+)

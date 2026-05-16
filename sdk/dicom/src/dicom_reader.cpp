@@ -21,6 +21,10 @@
 
 #define MAX_METADATA_ELEMENTS 256
 
+// [P0-FIX] 添加安全常量限制
+static const size_t MAX_ELEMENT_SIZE = 10 * 1024 * 1024;     // 10MB 元数据元素上限
+static const size_t MAX_PIXEL_DATA_SIZE = 500 * 1024 * 1024; // 500MB 像素数据上限
+
 typedef struct {
     uint32_t tag;
     uint8_t vr[2];
@@ -93,8 +97,10 @@ static inline void split_tag(uint32_t tag, uint16_t* group, uint16_t* element) {
 }
 
 static int read_explicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint8_t* vr, uint32_t* length, uint8_t** data) {
-    uint8_t tag_bytes[4];
-    if (fread(tag_bytes, 1, 4, ctx->file) != 4) return -1;
+    // [P0-FIX] Explicit VR 格式: 4字节tag + 2字节VR + 2字节reserved + 4字节length (或2字节length)
+    // 需要至少8字节buffer
+    uint8_t tag_bytes[8];
+    if (fread(tag_bytes, 1, 8, ctx->file) != 8) return -1;
     
     if (ctx->big_endian) {
         *tag = ((uint32_t)tag_bytes[0] << 24) | ((uint32_t)tag_bytes[1] << 16) | 
@@ -219,7 +225,8 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
         }
         
         // Store important metadata elements
-        if (length > 0 && length < 10000) {
+        // [P0-FIX] 使用常量限制替代硬上限
+        if (length > 0 && length < MAX_ELEMENT_SIZE) {
             add_metadata_element(ctx, tag, data, length);
         } else if (data) {
             free(data);
@@ -248,9 +255,19 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
             else if (element == 0x0011) ctx->columns = data[0] << 8 | data[1];
             else if (element == 0x0008) ctx->number_of_frames = data[0] << 8 | data[1];
             else if (element == 0x1050 && length >= 4) { // Window Center
-                ctx->window_center = atof((char*)data);
+                // [P0-FIX] data 可能不是 NUL 终止的，需要复制到临时缓冲区
+                char temp_buf[32];
+                size_t copy_len = length < sizeof(temp_buf) - 1 ? length : sizeof(temp_buf) - 1;
+                memcpy(temp_buf, data, copy_len);
+                temp_buf[copy_len] = '\0';
+                ctx->window_center = atof(temp_buf);
             } else if (element == 0x1051 && length >= 4) { // Window Width
-                ctx->window_width = atof((char*)data);
+                // [P0-FIX] data 可能不是 NUL 终止的，需要复制到临时缓冲区
+                char temp_buf[32];
+                size_t copy_len = length < sizeof(temp_buf) - 1 ? length : sizeof(temp_buf) - 1;
+                memcpy(temp_buf, data, copy_len);
+                temp_buf[copy_len] = '\0';
+                ctx->window_width = atof(temp_buf);
             }
         }
         else if (group == 0x0020 && length > 0 && data) {
@@ -266,7 +283,6 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
 // ============================================================================
 // Constants
 // ============================================================================
-
 
 // Value Representations
 static __attribute__((unused)) const char* VR_NAMES[] = {
@@ -434,11 +450,9 @@ static __attribute__((unused)) int read_tag_raw(DICOM_Context* ctx, uint32_t* ta
         return -1;
     }
     
-    if (ctx->big_endian) {
-        *tag = swap_uint32(*(uint32_t*)raw_tag);
-    } else {
-        *tag = *(uint32_t*)raw_tag;
-    }
+    uint32_t tmp_tag;
+    memcpy(&tmp_tag, raw_tag, sizeof(tmp_tag));
+    *tag = ctx->big_endian ? swap_uint32(tmp_tag) : tmp_tag;
     
     if (ctx->implicit_vr) {
         // Implicit VR: 4-byte length follows tag
@@ -446,7 +460,9 @@ static __attribute__((unused)) int read_tag_raw(DICOM_Context* ctx, uint32_t* ta
         if (fread(raw_len, 1, 4, ctx->file) != 4) {
             return -1;
         }
-        *length = ctx->big_endian ? swap_uint32(*(uint32_t*)raw_len) : *(uint32_t*)raw_len;
+        uint32_t tmp32;
+        memcpy(&tmp32, raw_len, sizeof(tmp32));
+        *length = ctx->big_endian ? swap_uint32(tmp32) : tmp32;
         *data = malloc(*length);
         if (*data && *length > 0) {
             if (fread(*data, 1, *length, ctx->file) != *length) {
@@ -477,9 +493,13 @@ static __attribute__((unused)) int read_tag_raw(DICOM_Context* ctx, uint32_t* ta
         if (fread(raw_len, 1, 4, ctx->file) != 4) return -1;
         
         if (vr_has_32bit_len) {
-            *length = ctx->big_endian ? swap_uint32(*(uint32_t*)raw_len) : *(uint32_t*)raw_len;
+            uint32_t tmp32;
+        memcpy(&tmp32, raw_len, sizeof(tmp32));
+        *length = ctx->big_endian ? swap_uint32(tmp32) : tmp32;
         } else {
-            *length = ctx->big_endian ? swap_uint16(*(uint16_t*)raw_len) : *(uint16_t*)raw_len;
+            uint16_t tmp16;
+            memcpy(&tmp16, raw_len, 2);
+            *length = ctx->big_endian ? swap_uint16(tmp16) : tmp16;
         }
         
         *data = malloc(*length);
@@ -556,7 +576,7 @@ int dicom_read_float(DICOM_Dataset dataset, uint32_t tag, float* value) {
     if (elem && elem->data && elem->length >= 4) {
         uint32_t bits = ((uint32_t)elem->data[0] << 24) | ((uint32_t)elem->data[1] << 16) |
                         ((uint32_t)elem->data[2] << 8) | elem->data[3];
-        *value = *((float*)&bits);
+        memcpy(value, &bits, sizeof(float));  // [P0-FIX] 安全的 float 转换
         return 0;
     }
     
@@ -579,7 +599,7 @@ int dicom_read_double(DICOM_Dataset dataset, uint32_t tag, double* value) {
         for (int i = 0; i < 8; i++) {
             bits = (bits << 8) | elem->data[i];
         }
-        *value = *((double*)&bits);
+        memcpy(value, &bits, sizeof(double));  // [P0-FIX] 安全的 double 转换
         return 0;
     }
     
@@ -716,11 +736,16 @@ const char* dicom_sop_class_to_modality(const char* sop_class_uid) {
 
 void dicom_extract_metadata(DICOM_Dataset dataset, DICOM_Metadata* metadata) {
     if (!dataset || !metadata) return;
-    
-    (void)dataset; (void)metadata;
-    
+
+    auto* ctx = static_cast<DICOM_Context*>(dataset);
+
+    // [P0-FIX] 从 ctx 读取实际的 modality，而不是硬编码 "CT"
+    if (!ctx->metadata_parsed) {
+        parse_dicom_metadata(ctx);
+    }
+
     // Set default values
-    strcpy(metadata->modality, "CT");
+    strcpy(metadata->modality, ctx->modality[0] ? ctx->modality : "OT");
     metadata->rescale_slope = 1.0f;
     metadata->rescale_intercept = -1024.0f;
     metadata->window_center = 40.0f;
@@ -730,13 +755,13 @@ void dicom_extract_metadata(DICOM_Dataset dataset, DICOM_Metadata* metadata) {
 
 bool dicom_is_monochrome(DICOM_Dataset dataset) {
     (void)dataset;
-    return true;
+    // [P0-FIX] 删除死代码，保留单一 return 语句
     return true;
 }
 
 bool dicom_needs_inversion(DICOM_Dataset dataset) {
     (void)dataset;
-    return false;
+    // [P0-FIX] 删除死代码，保留单一 return 语句
     // Would check actual tag value
     return false;
 }
