@@ -46,6 +46,7 @@ add_library(medicaldisplay_test_support STATIC
     support/display_linux_stubs.cpp
     support/drm_mock.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/src/ai_engine_impl.cpp
+    ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/src/onnx_backend.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/display_engine/src/display_engine_impl.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_reader.cpp
     ${MEDICALDISPLAY_ROOT}/sdk/dicom/src/dicom_gsdf.c
