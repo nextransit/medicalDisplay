@@ -176,18 +176,24 @@ float display_jnd_to_luminance(float jnd) {
 
 // [P1-FIX] display_generate_gsdf_lut: 实现真正的 GSDF LUT，而非恒等映射
 // 使用 DICOM Part 14 规定的 GSDF 算法
+// [P2-OPT] 使用 thread_local buffer 避免每次分配
+static thread_local std::unique_ptr<float[]> gsdf_temp_buffer;
+static thread_local size_t gsdf_temp_size = 0;
+
 void display_generate_gsdf_lut(float ambient_luminance, float target_luminance,
                                 int bit_depth, uint16_t* output) {
     if (!output) return;
-    
+
     const int lut_size = 1 << bit_depth;
-    
-    // 使用 dicom_gsdf.c 中已实现的真正 GSDF 算法
-    // 分配临时 float LUT
-    std::vector<float> float_lut(lut_size);
-    
+
+    // [P2-OPT] 复用 thread_local buffer 避免重复分配
+    if (gsdf_temp_size < static_cast<size_t>(lut_size)) {
+        gsdf_temp_size = lut_size * 2;  // Overallocate
+        gsdf_temp_buffer = std::make_unique<float[]>(gsdf_temp_size);
+    }
+
     // 生成 P-Value LUT
-    if (gsdf_generate_lut(float_lut.data(), lut_size, bit_depth,
+    if (gsdf_generate_lut(gsdf_temp_buffer.get(), lut_size, bit_depth,
                            ambient_luminance, target_luminance) != 0) {
         // fallback: 简单线性映射
         for (int i = 0; i < lut_size; ++i) {
@@ -195,11 +201,11 @@ void display_generate_gsdf_lut(float ambient_luminance, float target_luminance,
         }
         return;
     }
-    
+
     // 转换为 uint16_t 输出 (0 到 lut_size-1)
     const float scale = static_cast<float>(lut_size - 1);
     for (int i = 0; i < lut_size; ++i) {
-        output[i] = static_cast<uint16_t>(float_lut[i] * scale + 0.5f);
+        output[i] = static_cast<uint16_t>(gsdf_temp_buffer[i] * scale + 0.5f);
     }
 }
 
