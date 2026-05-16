@@ -179,3 +179,12 @@ add_medicaldisplay_gtest(test_digital_twin
     test_digital_twin.cpp
 )
 
+
+# ========================================================================
+# 全链路端到端集成测试
+# ========================================================================
+
+add_medicaldisplay_gtest(test_e2e_pipeline
+    test_e2e_pipeline.cpp
+)
+

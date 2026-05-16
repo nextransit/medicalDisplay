@@ -8,6 +8,7 @@
 
 #include "gpu_pipeline.h"
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
