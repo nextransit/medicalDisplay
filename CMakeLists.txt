@@ -5,22 +5,22 @@ project(MedicalDisplaySDK VERSION 1.0.0 LANGUAGES C CXX)
 # Project Configuration
 # ============================================================================
 
+# [P1-FIX] 添加 BUILD_PLATFORM_LINUX 选项
+option(BUILD_PLATFORM_LINUX "Build for Linux platform" OFF)
+option(ENABLE_VULKAN "Enable experimental Vulkan rendering support" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 编译器设置 (macOS优先使用g++-15，用户已指定的编译器优先)
-if(APPLE)
-    find_program(CXX_COMPILER_NAMES g++-15 g++-14 g++-13)
-    if(CXX_COMPILER_NAMES)
-        message(STATUS "Found C++ compiler: ${CXX_COMPILER_NAMES}")
-        if(NOT CMAKE_C_COMPILER)
-            set(CMAKE_C_COMPILER "/usr/bin/cc")
-        endif()
-        if(NOT CMAKE_CXX_COMPILER)
-            set(CMAKE_CXX_COMPILER "${CXX_COMPILER_NAMES}")
-        endif()
+# 编译器设置 (优先使用g++-15)
+find_program(CXX_COMPILER_NAMES NAMES g++-15 g++-14 g++-13)
+if(CXX_COMPILER_NAMES AND NOT DEFINED CMAKE_CXX_COMPILER)
+    message(STATUS "Found C++ compiler: ${CXX_COMPILER_NAMES}")
+    if(NOT DEFINED CMAKE_C_COMPILER)
+        set(CMAKE_C_COMPILER "/usr/bin/cc" CACHE FILEPATH "C compiler" FORCE)
     endif()
+    set(CMAKE_CXX_COMPILER "${CXX_COMPILER_NAMES}" CACHE FILEPATH "C++ compiler" FORCE)
 endif()
 
 # Compiler flags
@@ -51,7 +51,7 @@ add_subdirectory(sdk/dicom)
 add_subdirectory(sdk/cloud)
 
 # Platform-specific
-if(LINUX)
+if(BUILD_PLATFORM_LINUX OR LINUX)
     add_subdirectory(sdk/platform/linux)
 endif()
 
@@ -78,8 +78,6 @@ endif()
 # ============================================================================
 # Smoke Tests (Example Binaries as Tests)
 # ============================================================================
-# Note: These tests depend on example binaries being built first
-# Run with: ctest --test-dir build -R Smoke
 
 if(BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/linux")
     add_test(NAME Smoke_medical_display_demo COMMAND medical_display_demo --frames 2 --width 64 --height 64)
