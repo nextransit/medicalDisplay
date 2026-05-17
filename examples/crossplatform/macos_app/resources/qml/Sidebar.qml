@@ -272,7 +272,7 @@ Rectangle {
                     text: "⌘O"
                     color: mainWindow.colorTextMuted
                     font.pixelSize: 10
-                    font.family: "Menlo, Monaco, monospace"
+                    font.family: "monospace"
                 }
             }
         }

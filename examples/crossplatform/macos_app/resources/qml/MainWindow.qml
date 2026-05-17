@@ -232,11 +232,11 @@ ApplicationWindow {
         onActivated: { mainWindow.zoomLevel = 1.0; applyZoom() }
     }
     Shortcut {
-        sequence: StandardKey.ZoomIn
+        sequences: [StandardKey.ZoomIn]
         onActivated: { mainWindow.zoomLevel = Math.min(mainWindow.zoomLevel * 1.25, 10.0); applyZoom() }
     }
     Shortcut {
-        sequence: StandardKey.ZoomOut
+        sequences: [StandardKey.ZoomOut]
         onActivated: { mainWindow.zoomLevel = Math.max(mainWindow.zoomLevel / 1.25, 0.1); applyZoom() }
     }
 

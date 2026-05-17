@@ -104,7 +104,7 @@ private:
     bool readTag(const uint8_t *&ptr, const uint8_t *end,
                  bool explicitVR, bool bigEndian, DicomTag &tag);
     void parseFrameData();
-    void decodePixels(const DicomTag &pixelTag);
+    void decodePixels();
     bool decodeUncompressed(const uint8_t *data, uint32_t dataLen);
     bool decodeRLE(const uint8_t *data, uint32_t dataLen);
     bool decodeJPEG(const uint8_t *data, uint32_t dataLen);

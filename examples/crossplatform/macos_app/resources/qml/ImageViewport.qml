@@ -105,9 +105,17 @@ Rectangle {
         }
     }
 
-    // 视口尺寸同步到 C++（用于自适应分辨率渲染）
-    onWidthChanged:  Renderer.viewportWidth = width - 8
-    onHeightChanged: Renderer.viewportHeight = height - 8
+    // 视口尺寸同步到 C++（300ms 防抖，避免快速缩放时频繁重建 Metal 纹理）
+    Timer {
+        id: resizeDebounce
+        interval: 300
+        onTriggered: {
+            Renderer.viewportWidth = root.width - 8
+            Renderer.viewportHeight = root.height - 8
+        }
+    }
+    onWidthChanged:  resizeDebounce.restart()
+    onHeightChanged: resizeDebounce.restart()
 
     // 初始同步
     Component.onCompleted: {
@@ -211,6 +219,86 @@ Rectangle {
             } else {
                 mainWindow.brightness = 0.0;
                 mainWindow.contrast = 1.0;
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════
+    // 多帧导航控件（DICOM 多帧时显示）
+    // ═══════════════════════════════════════
+
+    Rectangle {
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: 50
+        width: frameNavContent.width + 20
+        height: 36
+        radius: mainWindow.radiusMd
+        color: Qt.rgba(0, 0, 0, 0.7)
+        visible: Dicom.frameCount > 1
+        z: 4
+
+        RowLayout {
+            id: frameNavContent
+            anchors.centerIn: parent
+            spacing: 8
+
+            // 上一帧
+            Rectangle {
+                width: 28; height: 28; radius: 6
+                color: btnPrevMA.pressed ? mainWindow.colorAccentDim : "transparent"
+                border.width: 1; border.color: mainWindow.colorBorder
+
+                Label {
+                    anchors.centerIn: parent
+                    text: "◀"
+                    color: mainWindow.colorTextPrimary
+                    font.pixelSize: 12
+                }
+
+                MouseArea {
+                    id: btnPrevMA
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        Dicom.prevFrame()
+                        root.dicomTick++
+                    }
+                }
+            }
+
+            // 帧计数器
+            Label {
+                text: (Dicom.currentFrame + 1) + " / " + Dicom.frameCount
+                color: mainWindow.colorAccent
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                Layout.preferredWidth: 60
+            }
+
+            // 下一帧
+            Rectangle {
+                width: 28; height: 28; radius: 6
+                color: btnNextMA.pressed ? mainWindow.colorAccentDim : "transparent"
+                border.width: 1; border.color: mainWindow.colorBorder
+
+                Label {
+                    anchors.centerIn: parent
+                    text: "▶"
+                    color: mainWindow.colorTextPrimary
+                    font.pixelSize: 12
+                }
+
+                MouseArea {
+                    id: btnNextMA
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        Dicom.nextFrame()
+                        root.dicomTick++
+                    }
+                }
             }
         }
     }

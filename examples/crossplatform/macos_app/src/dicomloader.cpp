@@ -180,13 +180,20 @@ bool DicomLoader::parseFile(const std::vector<uint8_t> &buffer)
         return false;
     }
 
-    // 解码像素数据
+    // 保存像素数据引用
     for (auto &t : m_tags) {
         if ((t.group == 0x7FE0 && t.element == 0x0010) && t.length > 0) {
-            decodePixels(t);
+            m_pixelDataPtr = t.data;
+            m_pixelDataLen = t.length;
             break;
         }
     }
+
+    // 解析帧数据并解码像素
+    parseFrameData();
+    decodePixels();
+    applyRescaleSlope();
+    buildDisplayImage();
 
     return !m_image.isNull();
 }
@@ -258,43 +265,47 @@ bool DicomLoader::readTag(const uint8_t *&ptr, const uint8_t *end,
     return true;
 }
 
-void DicomLoader::decodePixels(const DicomTag &pixelTag)
+void DicomLoader::decodePixels()
 {
-    uint32_t pixelCount = m_rows * m_cols;
-    if (pixelCount == 0 || pixelTag.data == nullptr) return;
-
-    m_floatPixels.resize(pixelCount * m_samplesPerPixel, 0.0f);
-
-    if (m_bitsAllocated <= 8) {
-        const uint8_t *src = pixelTag.data;
-        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && src < pixelTag.data + pixelTag.length; ++i, ++src) {
-            float val = static_cast<float>(*src);
-            if (m_pixelRep && (val >= (1u << (m_bitsStored - 1)))) {
-                val -= static_cast<float>(1u << m_bitsStored);  // 有符号
-            }
-            m_floatPixels[i] = val;
-        }
-    } else if (m_bitsAllocated == 16) {
-        const uint16_t *src = reinterpret_cast<const uint16_t*>(pixelTag.data);
-        size_t maxSrc = pixelTag.length / 2;
-        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && i < maxSrc; ++i) {
-            float val = static_cast<float>(src[i]);
-            if (m_pixelRep && (val >= (1u << (m_bitsStored - 1)))) {
-                val -= static_cast<float>(1u << m_bitsStored);
-            }
-            m_floatPixels[i] = val;
-        }
-    } else if (m_bitsAllocated == 32) {
-        const uint32_t *src = reinterpret_cast<const uint32_t*>(pixelTag.data);
-        size_t maxSrc = pixelTag.length / 4;
-        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && i < maxSrc; ++i) {
-            m_floatPixels[i] = static_cast<float>(src[i]);
-        }
+    // 使用当前帧数据（如有多帧），否则使用原始像素数据
+    const uint8_t *data = m_pixelDataPtr;
+    uint32_t dataLen = m_pixelDataLen;
+    if (!m_frameData.empty() && m_currentFrame < static_cast<int>(m_frameData.size())) {
+        data = m_frameData[m_currentFrame].data;
+        dataLen = m_frameData[m_currentFrame].length;
     }
 
-    applyRescaleSlope();
-    buildDisplayImage();
+    uint32_t pixelCount = m_rows * m_cols;
+    if (pixelCount == 0 || !data) return;
+
+    // 根据压缩类型解码
+    bool ok = false;
+    switch (m_compression) {
+    case CompressionType::RLE_Lossless:
+        ok = decodeRLE(data, dataLen); break;
+    case CompressionType::JPEG_Baseline:
+    case CompressionType::JPEG_Extended:
+    case CompressionType::JPEG_Lossless:
+    case CompressionType::JPEG_Lossless_SV1:
+        ok = decodeJPEG(data, dataLen); break;
+    case CompressionType::JPEG2000_Lossless:
+    case CompressionType::JPEG2000_Lossy:
+    case CompressionType::JPEG_LS_Lossless:
+    case CompressionType::JPEG_LS_Lossy:
+        emit errorOccurred(QStringLiteral("不支持的压缩格式: JPEG2000/JPEG-LS"));
+        return;
+    default:
+        ok = decodeUncompressed(data, dataLen); break;
+    }
+
+    if (!ok) {
+        // 回退：尝试原始解码
+        decodeUncompressed(data, dataLen);
+    }
+    return;  // decodeUncompressed 已填充 m_floatPixels
 }
+
+
 
 void DicomLoader::applyRescaleSlope()
 {
@@ -379,10 +390,8 @@ void DicomLoader::setFrame(int frame) {
     if (frame < 0 || frame >= m_frameCount) return;
     if (frame == m_currentFrame) return;
     m_currentFrame = frame;
-    if (!m_frameData.empty() && static_cast<size_t>(frame) < m_frameData.size()) {
-        auto &fi = m_frameData[frame];
-        decodePixels({0x7FE0, 0x0010, fi.length, fi.data});
-    }
+    decodePixels();
+    applyRescaleSlope();
     buildDisplayImage();
     emit frameChanged();
     emit fileLoaded();
