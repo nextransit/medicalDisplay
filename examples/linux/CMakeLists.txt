@@ -78,7 +78,7 @@ target_include_directories(surgical_video_demo PRIVATE
 )
 
 # V4L2采集Demo (Linux only)
-if(BUILD_PLATFORM_LINUX)
+if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_executable(v4l2_capture_demo v4l2_capture_demo.cpp)
     target_include_directories(v4l2_capture_demo PRIVATE
         ${MEDICALDISPLAY_SDK_ROOT}/platform/linux/include

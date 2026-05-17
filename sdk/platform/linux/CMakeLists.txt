@@ -55,8 +55,9 @@ install(DIRECTORY include/
 )
 
 # ============================================================================
-# V4L2视频采集模块
+# V4L2视频采集模块 (Linux only - 需要 linux/videodev2.h)
 # ============================================================================
+if(CMAKE_SYSTEM_NAME MATCHES "Linux")
 add_library(medicaldisplay_v4l2 STATIC
     src/v4l2_capture.cpp
 )
@@ -68,9 +69,14 @@ target_include_directories(medicaldisplay_v4l2 PUBLIC
 
 target_compile_features(medicaldisplay_v4l2 PUBLIC cxx_std_17)
 
+target_include_directories(medicaldisplay_v4l2 PRIVATE
+    ${CMAKE_SOURCE_DIR}/sdk/performance/include
+)
+
 target_link_libraries(medicaldisplay_v4l2 PUBLIC
     Threads::Threads
     medicaldisplay_platform_linux
+    medicaldisplay_performance
 )
 
 if(ENABLE_VULKAN AND Vulkan_FOUND)
@@ -83,4 +89,6 @@ install(TARGETS medicaldisplay_v4l2
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/medicaldisplay/platform/linux
         FILES_MATCHING PATTERN "*.h")
+endif()  # CMAKE_SYSTEM_NAME MATCHES "Linux"
+
 
