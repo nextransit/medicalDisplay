@@ -5,6 +5,7 @@
 #include <QSurfaceFormat>
 #include <QDebug>
 #include "imagerenderer.h"
+#include "dicomloader.h"
 
 int main(int argc, char *argv[])
 {
@@ -20,12 +21,14 @@ int main(int argc, char *argv[])
 
     QQuickStyle::setStyle("Material");
 
-    // 创建图像渲染器（同时是 QQuickImageProvider）
+    // 创建图像渲染器 + DICOM 加载器
     auto *renderer = new ImageRenderer();
+    auto *dicomLoader = new DicomLoader();
 
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("med"), renderer);
     engine.rootContext()->setContextProperty("Renderer", renderer);
+    engine.rootContext()->setContextProperty("Dicom", dicomLoader);
     engine.rootContext()->setContextProperty("appVersion", "2.0.0");
 
     const QUrl url(QStringLiteral("qrc:/qml/MainWindow.qml"));

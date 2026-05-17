@@ -32,6 +32,7 @@ endif()
 set(APP_SOURCES
     src/main.cpp
     src/imagerenderer.cpp
+    src/dicomloader.cpp
 )
 
 # macOS Metal 后端
