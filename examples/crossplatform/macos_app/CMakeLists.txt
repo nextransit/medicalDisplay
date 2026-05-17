@@ -18,9 +18,9 @@ endif()
 
 # ---- Qt 配置 ----
 # 优先使用 Qt6，回退到 Qt5
-find_package(Qt6 COMPONENTS Quick QuickControls2 Widgets QUIET)
+find_package(Qt6 COMPONENTS Quick QuickControls2 Widgets Concurrent QUIET)
 if(NOT Qt6_FOUND)
-    find_package(Qt5 5.15 REQUIRED COMPONENTS Quick QuickControls2 Widgets)
+    find_package(Qt5 5.15 REQUIRED COMPONENTS Quick QuickControls2 Widgets Concurrent)
     set(QT_VERSION_MAJOR 5)
     message(STATUS "使用 Qt5: ${Qt5_VERSION}")
 else()
@@ -57,6 +57,7 @@ else()
         Qt5::Quick
         Qt5::QuickControls2
         Qt5::Widgets
+        Qt5::Concurrent
     )
 endif()
 
@@ -66,6 +67,7 @@ if(QT_VERSION_MAJOR EQUAL 6)
         Qt6::Quick
         Qt6::QuickControls2
         Qt6::Widgets
+        Qt6::Concurrent
     )
 endif()
 

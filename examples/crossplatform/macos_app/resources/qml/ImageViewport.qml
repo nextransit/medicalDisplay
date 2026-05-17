@@ -63,13 +63,50 @@ Rectangle {
         }
     }
 
+    // 视口尺寸同步到 C++（用于自适应分辨率渲染）
+    onWidthChanged:  Renderer.viewportWidth = width - 8
+    onHeightChanged: Renderer.viewportHeight = height - 8
+
     // 初始同步
     Component.onCompleted: {
+        Renderer.viewportWidth = root.width - 8;
+        Renderer.viewportHeight = root.height - 8;
         Renderer.modality = mainWindow.currentModality;
         Renderer.brightness = mainWindow.brightness;
         Renderer.contrast = mainWindow.contrast;
         Renderer.saturation = mainWindow.saturation;
         Renderer.gsdfEnabled = mainWindow.gsdfEnabled;
+    }
+
+    // ---- Loading 指示器 ----
+    Rectangle {
+        anchors.centerIn: parent
+        width: 80; height: 80; radius: 12
+        color: Qt.rgba(0, 0, 0, 0.7)
+        visible: Renderer.loading
+        opacity: Renderer.loading ? 1.0 : 0.0
+
+        Behavior on opacity {
+            NumberAnimation { duration: 200; easing.type: Easing.InOutCubic }
+        }
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 8
+
+            BusyIndicator {
+                Layout.alignment: Qt.AlignHCenter
+                running: Renderer.loading
+                implicitWidth: 32; implicitHeight: 32
+                palette.dark: mainWindow.colorAccent
+            }
+            Label {
+                text: "渲染中..."
+                color: mainWindow.colorTextSecondary
+                font.pixelSize: 10
+                Layout.alignment: Qt.AlignHCenter
+            }
+        }
     }
 
     // ---- 覆盖层: DICOM 信息 ----
