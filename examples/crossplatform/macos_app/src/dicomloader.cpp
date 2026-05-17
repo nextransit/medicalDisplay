@@ -490,7 +490,11 @@ void DicomLoader::parseFrameData() {
     ptr += 8;
 
     if (itemTag == 0xFFFEE000) {
-        // 有 offset table，跳过
+        // 有 offset table，跳过（防御：防止损坏的 itemLen 导致越界）
+        if (ptr + itemLen > end) {
+            m_frameCount = 1;
+            return;
+        }
         ptr += itemLen;
         if (ptr + 8 > end) return;
 
@@ -563,17 +567,19 @@ bool DicomLoader::decodeRLE(const uint8_t *data, uint32_t dataLen) {
     if (!data || dataLen < 64) return false;
 
     uint32_t pixelCount = m_rows * m_cols;
-    m_floatPixels.resize(pixelCount, 0.0f);
+    int segments = (m_bitsAllocated > 8) ? 2 : 1;
+    if (m_samplesPerPixel == 3) segments = 3;
+
+    // 关键修复：pixelCount * segments 确保 RGB 图像有足够空间
+    m_floatPixels.resize(static_cast<size_t>(pixelCount) * segments, 0.0f);
+    size_t maxOutIdx = static_cast<size_t>(pixelCount) * segments;
 
     // RLE Header: 64 字节 (16 个 uint32 偏移量，对应 16 个 segment)
-    uint32_t offsets[16];
+    uint32_t offsets[16] = {};
     for (int i = 0; i < 16 && i * 4 + 4 <= (int)dataLen; ++i) {
         offsets[i] = (data[i * 4] << 24) | (data[i * 4 + 1] << 16)
                    | (data[i * 4 + 2] << 8) | data[i * 4 + 3];
     }
-
-    int segments = (m_bitsAllocated > 8) ? 2 : 1;
-    if (m_samplesPerPixel == 3) segments = 3;
 
     for (int seg = 0; seg < segments; ++seg) {
         if (offsets[seg] == 0 || offsets[seg] >= dataLen) continue;
@@ -583,22 +589,21 @@ bool DicomLoader::decodeRLE(const uint8_t *data, uint32_t dataLen) {
                                 ? data + offsets[seg + 1] : data + dataLen;
 
         size_t outIdx = seg;
-        while (src < srcEnd && outIdx < pixelCount * m_samplesPerPixel) {
+        while (src < srcEnd && outIdx < maxOutIdx) {
+            if (src >= srcEnd) break;
             int8_t n = static_cast<int8_t>(*src++);
             if (n >= 0) {
-                // 字面量: 复制 n+1 个字节
                 int count = n + 1;
-                for (int i = 0; i < count && src < srcEnd
-                     && outIdx < pixelCount * m_samplesPerPixel; ++i) {
+                for (int i = 0; i < count && src < srcEnd && outIdx < maxOutIdx; ++i) {
+                    if (src >= srcEnd) break;
                     m_floatPixels[outIdx] = static_cast<float>(*src++);
                     outIdx += segments;
                 }
             } else if (n > -128) {
-                // 重复: 重复下个字节 -n+1 次
                 int count = -n + 1;
                 if (src >= srcEnd) break;
                 uint8_t val = *src++;
-                for (int i = 0; i < count && outIdx < pixelCount * m_samplesPerPixel; ++i) {
+                for (int i = 0; i < count && outIdx < maxOutIdx; ++i) {
                     m_floatPixels[outIdx] = static_cast<float>(val);
                     outIdx += segments;
                 }
