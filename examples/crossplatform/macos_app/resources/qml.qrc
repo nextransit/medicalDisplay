@@ -1,0 +1,9 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>qml/MainWindow.qml</file>
+        <file>qml/Sidebar.qml</file>
+        <file>qml/InfoPanel.qml</file>
+        <file>qml/ImageViewport.qml</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,176 @@
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+
+/**
+ * 影像视口 — C++ 高性能渲染 + QML 显示
+ *
+ * 架构: C++ ImageRenderer (后台生成) → image://med/ → QML Image 显示
+ */
+
+Rectangle {
+    id: root
+    color: "#000000"
+    radius: mainWindow.radiusLg
+
+    // 模态切换动画状态
+    property bool animating: false
+    Behavior on animating { NumberAnimation { duration: 200 } }
+
+    // 刷新计数器（每次参数变化 +1，触发 Image 重新加载）
+    property int refreshTick: 0
+
+    // ---- 主影像显示 ----
+    Image {
+        id: medicalImage
+        anchors.fill: parent
+        anchors.margins: 4
+        opacity: root.animating ? 0.0 : 1.0
+        fillMode: Image.PreserveAspectFit
+        cache: false
+        source: "image://med/current?t=" + root.refreshTick
+
+        Behavior on opacity {
+            NumberAnimation { duration: 300; easing.type: Easing.InOutCubic }
+        }
+    }
+
+    // ---- 属性同步到 C++ Renderer ----
+    Connections {
+        target: mainWindow
+        function onCurrentModalityChanged() {
+            root.animating = true;
+            modalityTimer.restart();
+            Renderer.modality = mainWindow.currentModality;
+        }
+        function onBrightnessChanged()   { Renderer.brightness = mainWindow.brightness; }
+        function onContrastChanged()     { Renderer.contrast = mainWindow.contrast; }
+        function onSaturationChanged()   { Renderer.saturation = mainWindow.saturation; }
+        function onGsdfEnabledChanged()  { Renderer.gsdfEnabled = mainWindow.gsdfEnabled; }
+    }
+
+    // C++ 端图像更新后刷新显示
+    Connections {
+        target: Renderer
+        function onImageUpdated() { root.refreshTick++; }
+    }
+
+    Timer {
+        id: modalityTimer
+        interval: 320
+        onTriggered: {
+            root.animating = false;
+        }
+    }
+
+    // 初始同步
+    Component.onCompleted: {
+        Renderer.modality = mainWindow.currentModality;
+        Renderer.brightness = mainWindow.brightness;
+        Renderer.contrast = mainWindow.contrast;
+        Renderer.saturation = mainWindow.saturation;
+        Renderer.gsdfEnabled = mainWindow.gsdfEnabled;
+    }
+
+    // ---- 覆盖层: DICOM 信息 ----
+    Rectangle {
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        width: infoContent.width + 24
+        height: infoContent.height + 16
+        radius: mainWindow.radiusSm
+        color: Qt.rgba(0, 0, 0, 0.65)
+
+        ColumnLayout {
+            id: infoContent
+            anchors.centerIn: parent
+            spacing: 2
+            RowLayout {
+                spacing: 16
+                OverlayLabel { label: "W/L"; value: "40/400" }
+                OverlayLabel { label: "Zoom"; value: "1.0×" }
+                OverlayLabel { label: "Matrix"; value: "800×700" }
+            }
+            RowLayout {
+                spacing: 16
+                OverlayLabel { label: "Patient"; value: "ID: 20240517" }
+                OverlayLabel { label: "Study"; value: mainWindow.modalityNames[mainWindow.currentModality] }
+            }
+        }
+    }
+
+    component OverlayLabel: RowLayout {
+        property string label
+        property string value
+        spacing: 4
+        Label {
+            text: label
+            color: mainWindow.colorAccent
+            font.pixelSize: 10
+            font.weight: Font.DemiBold
+        }
+        Label {
+            text: value
+            color: "#ffffff"
+            font.pixelSize: 10
+        }
+    }
+
+    // ---- 右上角 AI 标签 ----
+    Rectangle {
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 12
+        width: aiTagContent.width + 20
+        height: aiTagContent.height + 14
+        radius: mainWindow.radiusSm
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0; color: Qt.rgba(0, 0.83, 0.67, 0.7) }
+            GradientStop { position: 1.0; color: Qt.rgba(0, 0.61, 0.49, 0.7) }
+        }
+        ColumnLayout {
+            id: aiTagContent
+            anchors.centerIn: parent
+            spacing: 0
+            Label {
+                text: "AI 识别: " + mainWindow.aiModality
+                color: "#ffffff"
+                font.pixelSize: 11
+                font.weight: Font.DemiBold
+            }
+            Label {
+                text: "置信度: " + Math.round(mainWindow.aiConfidence * 100) + "%"
+                color: "#ffffff"
+                font.pixelSize: 10
+                opacity: 0.85
+            }
+        }
+    }
+
+    // ---- 比例尺 ----
+    Rectangle {
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        width: 80; height: 20
+        color: "transparent"
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 8
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 60; height: 1
+            color: "#ffffff"
+            opacity: 0.6
+        }
+        Label {
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "5 cm"
+            color: "#ffffff"
+            font.pixelSize: 9
+            opacity: 0.6
+        }
+    }
+}
