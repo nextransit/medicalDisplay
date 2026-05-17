@@ -81,7 +81,7 @@
 
 ---
 
-## 六、文档交付 (16份)
+## 六、文档交付 (22份)
 
 | 文档 | 路径 | 状态 |
 |------|------|------|
@@ -98,6 +98,11 @@
 | 故障排除 | `docs/TROUBLESHOOTING.md` | ✅ |
 | 模型训练 | `docs/MODEL_TRAINING.md` | ✅ |
 | 代码审查 | `docs/CODE_REVIEW.md` | ✅ |
+| **软件生命周期** | `docs/SOFTWARE_LIFECYCLE.md` | ✅ IEC 62304 |
+| **风险管理** | `docs/RISK_MANAGEMENT.md` | ✅ ISO 14971 |
+| **NMPA注册** | `docs/NMPA_REGISTRATION.md` | ✅ 产品技术要求 |
+| **POC标杆方案** | `docs/POC_PROGRAM.md` | ✅ 临床验证 |
+| **医疗认证** | `docs/CERTIFICATION.md` | ✅ FDA/CE/NMPA |
 | **医疗认证** | `docs/CERTIFICATION.md` | ✅ FDA/CE/ISO13485 |
 | **技术壁垒** | `docs/TECHNICAL_BARRIERS.md` | ✅ |
 | **商业模式** | `docs/BUSINESS_MODEL.md` | ✅ |
