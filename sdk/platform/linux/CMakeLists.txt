@@ -57,14 +57,30 @@ install(DIRECTORY include/
 # ============================================================================
 # V4L2视频采集模块
 # ============================================================================
-set(V4L2_SOURCES
-    ${LINUX_SOURCE_DIR}/v4l2_capture.cpp
+add_library(medicaldisplay_v4l2 STATIC
+    src/v4l2_capture.cpp
 )
 
-if(ENABLE_VULKAN)
-    list(APPEND V4L2_SOURCES ${LINUX_SOURCE_DIR}/vulkan_renderer.cpp)
+target_include_directories(medicaldisplay_v4l2 PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_compile_features(medicaldisplay_v4l2 PUBLIC cxx_std_17)
+
+target_link_libraries(medicaldisplay_v4l2 PUBLIC
+    Threads::Threads
+    medicaldisplay_platform_linux
+)
+
+if(ENABLE_VULKAN AND Vulkan_FOUND)
+    target_link_libraries(medicaldisplay_v4l2 PRIVATE Vulkan::Vulkan)
 endif()
 
-target_sources(medical_display_linux PRIVATE ${V4L2_SOURCES})
-target_include_directories(medical_display_linux PUBLIC ${LINUX_INCLUDE_DIR})
+install(TARGETS medicaldisplay_v4l2
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/medicaldisplay/platform/linux
+        FILES_MATCHING PATTERN "*.h")
 

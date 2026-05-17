@@ -81,13 +81,13 @@ target_include_directories(surgical_video_demo PRIVATE
 if(BUILD_PLATFORM_LINUX)
     add_executable(v4l2_capture_demo v4l2_capture_demo.cpp)
     target_include_directories(v4l2_capture_demo PRIVATE
-        ${SDK_ROOT}/sdk/platform/linux/include
-        ${SDK_ROOT}/sdk/performance/include
-        ${SDK_ROOT}/sdk/surgical_video/include
+        ${MEDICALDISPLAY_SDK_ROOT}/platform/linux/include
+        ${MEDICALDISPLAY_SDK_ROOT}/performance/include
+        ${MEDICALDISPLAY_SDK_ROOT}/surgical_video/include
     )
     target_link_libraries(v4l2_capture_demo PRIVATE
-        medical_display_surgical
-        medical_display_simd
+        medicaldisplay_surgical
+        medicaldisplay_simd
         Threads::Threads
     )
     add_test(NAME Smoke_v4l2_capture_demo COMMAND v4l2_capture_demo --help)
