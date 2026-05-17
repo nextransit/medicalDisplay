@@ -27,6 +27,7 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("med"), renderer);
+    engine.addImageProvider(QStringLiteral("dicom"), dicomLoader);
     engine.rootContext()->setContextProperty("Renderer", renderer);
     engine.rootContext()->setContextProperty("Dicom", dicomLoader);
     engine.rootContext()->setContextProperty("appVersion", "2.0.0");

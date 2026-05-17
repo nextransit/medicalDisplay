@@ -5,9 +5,21 @@
 #include <algorithm>
 #include <cstring>
 
-DicomLoader::DicomLoader(QObject *parent)
-    : QObject(parent)
+DicomLoader::DicomLoader()
+    : QQuickImageProvider(QQuickImageProvider::Image)
 {
+}
+
+QImage DicomLoader::requestImage(const QString &id, QSize *size, const QSize &requestedSize) {
+    Q_UNUSED(id)
+    if (m_image.isNull()) {
+        if (size) *size = QSize(1, 1);
+        QImage placeholder(1, 1, QImage::Format_ARGB32);
+        placeholder.fill(Qt::transparent);
+        return placeholder;
+    }
+    if (size) *size = m_image.size();
+    return m_image;
 }
 
 void DicomLoader::loadFile(const QString &path)

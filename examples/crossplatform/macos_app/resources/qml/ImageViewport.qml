@@ -13,12 +13,20 @@ Rectangle {
     color: "#000000"
     radius: mainWindow.radiusLg
 
-    // 模态切换动画状态
     property bool animating: false
     Behavior on animating { NumberAnimation { duration: 200 } }
-
-    // 刷新计数器（每次参数变化 +1，触发 Image 重新加载）
     property int refreshTick: 0
+
+    // ---- 拖拽区域（DICOM 文件接受） ----
+    DropArea {
+        anchors.fill: parent
+        onEntered: drag.acceptProposedAction()
+        onDropped: {
+            if (drop.hasUrls && drop.urls.length > 0) {
+                Dicom.loadUrl(drop.urls[0])
+            }
+        }
+    }
 
     // ---- 主影像显示 ----
     Image {
@@ -32,6 +40,20 @@ Rectangle {
 
         Behavior on opacity {
             NumberAnimation { duration: 300; easing.type: Easing.InOutCubic }
+        }
+    }
+
+    // ---- DICOM 影像叠加层 ----
+    Image {
+        id: dicomOverlay
+        anchors.fill: parent
+        anchors.margins: 4
+        fillMode: Image.PreserveAspectFit
+        visible: Dicom.hasImage
+        cache: false
+        source: "image://dicom/current"
+        onVisibleChanged: {
+            if (visible) root.refreshTick++  // 确保刷新
         }
     }
 

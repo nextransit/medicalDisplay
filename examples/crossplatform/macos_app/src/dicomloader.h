@@ -1,23 +1,23 @@
 #pragma once
 #include <QObject>
 #include <QImage>
+#include <QQuickImageProvider>
 #include <QString>
 #include <QUrl>
 #include <vector>
 #include <cstdint>
 
 /**
- * DICOM 文件加载器
+ * DICOM 文件加载器 + ImageProvider
  *
  * 支持:
  *   - DICOM Part 10 文件格式解析
  *   - 显式/隐式 VR 传输语法
  *   - 小端/大端字节序
  *   - 无压缩像素数据 (Raw/Monochrome/RGB)
- *   - 窗口/窗位应用
- *   - 元数据提取 (Patient, Study, Modality 等)
+ *   - image://dicom/current 供 QML Image 使用
  */
-class DicomLoader : public QObject {
+class DicomLoader : public QQuickImageProvider {
     Q_OBJECT
     Q_PROPERTY(QString filePath READ filePath WRITE loadFile NOTIFY fileLoaded)
     Q_PROPERTY(bool hasImage READ hasImage NOTIFY fileLoaded)
@@ -31,7 +31,10 @@ class DicomLoader : public QObject {
     Q_PROPERTY(float windowWidth READ windowWidth NOTIFY fileLoaded)
 
 public:
-    explicit DicomLoader(QObject *parent = nullptr);
+    explicit DicomLoader();
+
+    // QQuickImageProvider
+    QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
 
     QString filePath() const { return m_filePath; }
     bool hasImage() const { return !m_image.isNull(); }
