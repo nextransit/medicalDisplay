@@ -136,6 +136,14 @@ void ImageRenderer::processRenderQueue()
 {
     if (!m_dirty.load()) return;
 
+    // 防止并发渲染：如果已有渲染在进行中，等待下一次
+    bool expected = false;
+    if (!m_rendering.compare_exchange_strong(expected, true)) {
+        // 重新标记 dirty，下一轮重试
+        m_dirty.store(true);
+        return;
+    }
+
     int w = m_viewW.load();
     int h = m_viewH.load();
 
@@ -149,10 +157,13 @@ void ImageRenderer::processRenderQueue()
         emit loadingChanged();
     }
 
-    // 异步生成图像（不阻塞 UI 线程）
-    // 保存 QFuture 返回值以避免 nodiscard 警告
+    // 清理 dirty 标志（在派发渲染前，防止重复触发）
+    m_dirty.store(false);
+
+    // 异步生成图像
     QFuture<void> future = QtConcurrent::run([this, w, h]() {
         generateImage(w, h);
+        m_rendering.store(false);
     });
     Q_UNUSED(future)
 }
@@ -218,7 +229,6 @@ bool ImageRenderer::generateOnGPU(int width, int height)
     {
         QMutexLocker lock(&m_mutex);
         m_image = img;
-        m_image.detach();  // 确保深拷贝，避免隐式共享问题
     }
     return true;
 }
@@ -341,7 +351,6 @@ void ImageRenderer::generateOnCPU(int width, int height)
     {
         QMutexLocker lock(&m_mutex);
         m_image = img;
-        m_image.detach();  // 确保深拷贝，避免隐式共享导致跨线程问题
     }
 }
 

@@ -83,6 +83,7 @@ private:
     std::atomic<float> m_saturation{1.0f};
     std::atomic<bool> m_gsdfEnabled{true};
     std::atomic<bool> m_dirty{true};
+    std::atomic<bool> m_rendering{false};  // 防止并发渲染
     std::atomic<bool> m_loading{false};
     std::atomic<int> m_viewW{800};
     std::atomic<int> m_viewH{700};
