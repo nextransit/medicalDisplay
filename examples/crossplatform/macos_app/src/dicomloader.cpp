@@ -434,3 +434,200 @@ float DicomLoader::readFloatTag(uint16_t group, uint16_t element) const
     float val = s.toFloat(&ok);
     return ok ? val : 0.0f;
 }
+
+// ---- 传输语法 → 压缩类型映射 ----
+
+CompressionType DicomLoader::transferSyntaxToCompression(const QString &ts) {
+    if (ts.contains("1.2.840.10008.1.2"))       return CompressionType::Uncompressed;
+    if (ts.contains("1.2.840.10008.1.2.1"))     return CompressionType::Uncompressed;
+    if (ts.contains("1.2.840.10008.1.2.2"))     return CompressionType::Uncompressed;
+    if (ts.contains("1.2.840.10008.1.2.5"))     return CompressionType::RLE_Lossless;
+    if (ts.contains("1.2.840.10008.1.2.4.50"))  return CompressionType::JPEG_Baseline;
+    if (ts.contains("1.2.840.10008.1.2.4.51"))  return CompressionType::JPEG_Extended;
+    if (ts.contains("1.2.840.10008.1.2.4.57"))  return CompressionType::JPEG_Lossless;
+    if (ts.contains("1.2.840.10008.1.2.4.70"))  return CompressionType::JPEG_Lossless_SV1;
+    if (ts.contains("1.2.840.10008.1.2.4.80"))  return CompressionType::JPEG_LS_Lossless;
+    if (ts.contains("1.2.840.10008.1.2.4.81"))  return CompressionType::JPEG_LS_Lossy;
+    if (ts.contains("1.2.840.10008.1.2.4.90"))  return CompressionType::JPEG2000_Lossless;
+    if (ts.contains("1.2.840.10008.1.2.4.91"))  return CompressionType::JPEG2000_Lossy;
+    return CompressionType::Unknown;
+}
+
+// ---- 多帧数据解析 ----
+
+void DicomLoader::parseFrameData() {
+    m_frameData.clear();
+
+    if (m_frameCount <= 1 && !m_isEncapsulated) {
+        // 单帧非封装：直接用原始像素数据
+        if (m_pixelDataPtr && m_pixelDataLen > 0) {
+            m_frameData.push_back({m_pixelDataPtr, m_pixelDataLen});
+        }
+        return;
+    }
+
+    if (!m_isEncapsulated || !m_pixelDataPtr || m_pixelDataLen < 8) {
+        m_frameCount = 1;
+        return;
+    }
+
+    // 封装格式：读取 Basic Offset Table
+    const uint8_t *ptr = m_pixelDataPtr;
+    const uint8_t *end = ptr + m_pixelDataLen;
+
+    // 第一个 item 是 Basic Offset Table (可选)
+    uint32_t itemTag = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
+    uint32_t itemLen = (ptr[4] << 24) | (ptr[5] << 16) | (ptr[6] << 8) | ptr[7];
+    ptr += 8;
+
+    if (itemTag == 0xFFFEE000) {
+        // 有 offset table，跳过
+        ptr += itemLen;
+        if (ptr + 8 > end) return;
+
+        // 读取 fragment sequence delimiter 或第一个 fragment
+        itemTag = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
+        itemLen = (ptr[4] << 24) | (ptr[5] << 16) | (ptr[6] << 8) | ptr[7];
+        ptr += 8;
+    }
+
+    // 读取 fragments
+    while (ptr + 8 <= end) {
+        if (itemTag == 0xFFFEE0DD) break;  // Sequence Delimiter
+        if (itemTag == 0xFFFEE000) {
+            // Fragment item
+            if (ptr + itemLen > end) break;
+            m_frameData.push_back({ptr, itemLen});
+            ptr += itemLen;
+        } else {
+            break;
+        }
+
+        if (ptr + 8 > end) break;
+        itemTag = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
+        itemLen = (ptr[4] << 24) | (ptr[5] << 16) | (ptr[6] << 8) | ptr[7];
+        ptr += 8;
+    }
+
+    m_frameCount = static_cast<int>(m_frameData.size());
+    if (m_frameCount == 0) m_frameCount = 1;
+}
+
+// ---- 未压缩像素解码 ----
+
+bool DicomLoader::decodeUncompressed(const uint8_t *data, uint32_t dataLen) {
+    uint32_t pixelCount = m_rows * m_cols;
+    if (pixelCount == 0 || !data || dataLen == 0) return false;
+
+    m_floatPixels.resize(pixelCount * m_samplesPerPixel, 0.0f);
+
+    if (m_bitsAllocated <= 8) {
+        const uint8_t *src = data;
+        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && src < data + dataLen; ++i, ++src) {
+            float val = static_cast<float>(*src);
+            if (m_pixelRep && val >= (1u << (m_bitsStored - 1)))
+                val -= static_cast<float>(1u << m_bitsStored);
+            m_floatPixels[i] = val;
+        }
+    } else if (m_bitsAllocated == 16) {
+        const uint16_t *src = reinterpret_cast<const uint16_t*>(data);
+        size_t maxSrc = dataLen / 2;
+        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && i < maxSrc; ++i) {
+            float val = static_cast<float>(src[i]);
+            if (m_pixelRep && val >= (1u << (m_bitsStored - 1)))
+                val -= static_cast<float>(1u << m_bitsStored);
+            m_floatPixels[i] = val;
+        }
+    } else {
+        const uint32_t *src = reinterpret_cast<const uint32_t*>(data);
+        size_t maxSrc = dataLen / 4;
+        for (uint32_t i = 0; i < pixelCount * m_samplesPerPixel && i < maxSrc; ++i)
+            m_floatPixels[i] = static_cast<float>(src[i]);
+    }
+
+    return true;
+}
+
+// ---- RLE 无损解码器 (DICOM Part 5 Annex G) ----
+
+bool DicomLoader::decodeRLE(const uint8_t *data, uint32_t dataLen) {
+    if (!data || dataLen < 64) return false;
+
+    uint32_t pixelCount = m_rows * m_cols;
+    m_floatPixels.resize(pixelCount, 0.0f);
+
+    // RLE Header: 64 字节 (16 个 uint32 偏移量，对应 16 个 segment)
+    uint32_t offsets[16];
+    for (int i = 0; i < 16 && i * 4 + 4 <= (int)dataLen; ++i) {
+        offsets[i] = (data[i * 4] << 24) | (data[i * 4 + 1] << 16)
+                   | (data[i * 4 + 2] << 8) | data[i * 4 + 3];
+    }
+
+    int segments = (m_bitsAllocated > 8) ? 2 : 1;
+    if (m_samplesPerPixel == 3) segments = 3;
+
+    for (int seg = 0; seg < segments; ++seg) {
+        if (offsets[seg] == 0 || offsets[seg] >= dataLen) continue;
+
+        const uint8_t *src = data + offsets[seg];
+        const uint8_t *srcEnd = (seg + 1 < 16 && offsets[seg + 1] > offsets[seg])
+                                ? data + offsets[seg + 1] : data + dataLen;
+
+        size_t outIdx = seg;
+        while (src < srcEnd && outIdx < pixelCount * m_samplesPerPixel) {
+            int8_t n = static_cast<int8_t>(*src++);
+            if (n >= 0) {
+                // 字面量: 复制 n+1 个字节
+                int count = n + 1;
+                for (int i = 0; i < count && src < srcEnd
+                     && outIdx < pixelCount * m_samplesPerPixel; ++i) {
+                    m_floatPixels[outIdx] = static_cast<float>(*src++);
+                    outIdx += segments;
+                }
+            } else if (n > -128) {
+                // 重复: 重复下个字节 -n+1 次
+                int count = -n + 1;
+                if (src >= srcEnd) break;
+                uint8_t val = *src++;
+                for (int i = 0; i < count && outIdx < pixelCount * m_samplesPerPixel; ++i) {
+                    m_floatPixels[outIdx] = static_cast<float>(val);
+                    outIdx += segments;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+// ---- JPEG 解码器 (Qt QImage 跨平台) ----
+
+bool DicomLoader::decodeJPEG(const uint8_t *data, uint32_t dataLen)
+{
+    if (!data || dataLen == 0) return false;
+
+    uint32_t pixelCount = m_rows * m_cols;
+    if (pixelCount == 0) return false;
+
+    // 使用 QImage 加载 JPEG（跨平台，不依赖平台 API）
+    QImage jpeg = QImage::fromData(data, static_cast<int>(dataLen), "JPEG");
+    if (jpeg.isNull()) return false;
+
+    // 转为灰度浮点像素
+    int jw = jpeg.width();
+    int jh = jpeg.height();
+    m_floatPixels.resize(pixelCount, 0.0f);
+
+    for (uint32_t y = 0; y < m_rows && y < static_cast<uint32_t>(jh); ++y) {
+        const uchar *scanline = jpeg.constScanLine(static_cast<int>(y));
+        if (!scanline) continue;
+        for (uint32_t x = 0; x < m_cols && x < static_cast<uint32_t>(jw); ++x) {
+            int si = x * 4;
+            float r = scanline[si + 2] / 255.0f;
+            float g = scanline[si + 1] / 255.0f;
+            float b = scanline[si + 0] / 255.0f;
+            m_floatPixels[y * m_cols + x] = 0.299f * r + 0.587f * g + 0.114f * b;
+        }
+    }
+    return true;
+}
