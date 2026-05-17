@@ -188,3 +188,27 @@ add_medicaldisplay_gtest(test_e2e_pipeline
     test_e2e_pipeline.cpp
 )
 
+
+# SIMD性能基准测试
+add_executable(test_simd_benchmark test_simd_benchmark.cpp)
+target_link_libraries(test_simd_benchmark PRIVATE
+    medicaldisplay_test_support
+    medicaldisplay_performance
+    GTest::gtest_main
+)
+target_include_directories(test_simd_benchmark PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/support
+    ${CMAKE_CURRENT_SOURCE_DIR}/support/drm
+    ${MEDICALDISPLAY_ROOT}/sdk/ai_engine/include
+    ${MEDICALDISPLAY_ROOT}/sdk/common/include
+    ${MEDICALDISPLAY_ROOT}/sdk/display_engine/include
+    ${MEDICALDISPLAY_ROOT}/sdk/dicom/include
+    ${MEDICALDISPLAY_ROOT}/sdk/performance/include
+    ${MEDICALDISPLAY_ROOT}/sdk/surgical_video/include
+    ${MEDICALDISPLAY_ROOT}/sdk/multimodal/include
+)
+if(APPLE)
+    target_link_libraries(test_simd_benchmark PRIVATE c++)
+endif()
+target_compile_features(test_simd_benchmark PRIVATE cxx_std_17)
+gtest_discover_tests(test_simd_benchmark)

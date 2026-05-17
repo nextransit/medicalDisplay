@@ -326,3 +326,60 @@ message(STATUS "  ENABLE_OPENGL: ${ENABLE_OPENGL}")
 message(STATUS "  ENABLE_NPU: ${ENABLE_NPU}")
 message(STATUS "  ENABLE_GPU: ${ENABLE_GPU}")
 message(STATUS "========================================")
+
+# ============================================================================
+# Performance模块 (SIMD加速)
+# ============================================================================
+set(PERFORMANCE_INCLUDE_DIR ${SDK_ROOT}/performance/include)
+set(PERFORMANCE_SOURCE_DIR ${SDK_ROOT}/performance/src)
+
+set(SIMD_SOURCES
+    ${PERFORMANCE_SOURCE_DIR}/simd_neon.cpp
+    ${PERFORMANCE_SOURCE_DIR}/simd_processing.cpp
+    ${PERFORMANCE_SOURCE_DIR}/simd_processing_extended.cpp
+    ${PERFORMANCE_SOURCE_DIR}/memory_pool.cpp
+)
+
+add_library(medical_display_simd STATIC ${SIMD_SOURCES})
+target_include_directories(medical_display_simd PUBLIC ${PERFORMANCE_INCLUDE_DIR})
+target_link_libraries(medical_display_simd PUBLIC medical_display_common)
+
+# ============================================================================
+# Surgical Video模块 (GPU加速)
+# ============================================================================
+set(SURGICAL_INCLUDE_DIR ${SDK_ROOT}/surgical_video/include)
+set(SURGICAL_SOURCE_DIR ${SDK_ROOT}/surgical_video/src)
+
+set(SURGICAL_SOURCES
+    ${SURGICAL_SOURCE_DIR}/surgical_video.cpp
+    ${SURGICAL_SOURCE_DIR}/surgical_video_optimized.cpp
+    ${SURGICAL_SOURCE_DIR}/gpu_pipeline_cpu_fallback.cpp
+)
+
+if(ENABLE_VULKAN)
+    list(APPEND SURGICAL_SOURCES ${SURGICAL_SOURCE_DIR}/vulkan_compute.cpp)
+endif()
+
+add_library(medical_display_surgical STATIC ${SURGICAL_SOURCES})
+target_include_directories(medical_display_surgical PUBLIC ${SURGICAL_INCLUDE_DIR} ${INCLUDE_DIR} ${PERFORMANCE_INCLUDE_DIR} ${SDK_ROOT}/common/include)
+target_link_libraries(medical_display_surgical PUBLIC medical_display_simd)
+
+if(ENABLE_VULKAN AND Vulkan_FOUND)
+    target_link_libraries(medical_display_surgical PUBLIC Vulkan::vulkan)
+endif()
+
+# ============================================================================
+# Multimodal模块 (3D体绘制)
+# ============================================================================
+set(MULTIMODAL_INCLUDE_DIR ${SDK_ROOT}/multimodal/include)
+set(MULTIMODAL_SOURCE_DIR ${SDK_ROOT}/multimodal/src)
+
+set(MULTIMODAL_SOURCES
+    ${MULTIMODAL_SOURCE_DIR}/multimodal_fusion.cpp
+    ${MULTIMODAL_SOURCE_DIR}/volume_renderer.cpp
+)
+
+add_library(medical_display_multimodal STATIC ${MULTIMODAL_SOURCES})
+target_include_directories(medical_display_multimodal PUBLIC ${MULTIMODAL_INCLUDE_DIR})
+target_link_libraries(medical_display_multimodal PUBLIC medical_display_simd)
+

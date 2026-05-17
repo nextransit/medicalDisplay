@@ -81,12 +81,15 @@
 
 ---
 
-## 六、文档交付 (13份)
+## 六、文档交付 (16份)
 
 | 文档 | 路径 | 状态 |
 |------|------|------|
 | 架构白皮书 | `AI_ADAPTIVE_MEDICAL_DISPLAY_SYSTEM_ARCHITECTURE.md` | ✅ |
-| API参考 | `docs/API_REFERENCE.md` | ✅ |
+| API参考 (v1.0) | `docs/API_REFERENCE.md` | ✅ |
+| API参考 (v2.0) | `docs/API_REFERENCE_V2.md` | ✅ SIMD/GPU/V4L2 |
+| 性能优化报告 | `docs/PERFORMANCE.md` | ✅ |
+| 示例程序指南 | `docs/EXAMPLES.md` | ✅ |
 | 架构设计 | `docs/ARCHITECTURE.md` | ✅ |
 | 构建指南 | `docs/BUILD_GUIDE.md` | ✅ |
 | 校准指南 | `docs/CALIBRATION.md` | ✅ |
@@ -181,3 +184,91 @@ medicalDisplay/
 
 - **技术支持**: support@medical-display.ai
 - **商务合作**: business@medical-display.ai
+
+---
+
+## v2.0 新增功能 (2026-05-16)
+
+### SDK模块 (新增3个)
+
+| 模块 | 路径 | 状态 | 说明 |
+|------|------|------|------|
+| SIMD加速 | `sdk/performance/` | ✅ | SSE4.2/AVX2/NEON/Scalar |
+| GPU管线 | `sdk/surgical_video/` | ✅ | Vulkan/Metal Compute Shader |
+| V4L2采集 | `sdk/platform/linux/` | ✅ | 实时视频流处理 |
+
+### SIMD函数 (新增10个)
+
+| 函数 | 说明 | 性能 (640x480) |
+|------|------|------------------|
+| `simd_gsdf_lut_apply` | GSDF查表应用 | 0.28ms |
+| `simd_edge_detection_sobel` | Sobel边缘检测 | 0.21ms |
+| `simd_bloodless_enhance` | 无血术野增强 | 0.32ms |
+| `simd_rgb_to_grayscale` | RGB转灰度 | 0.08ms |
+| `simd_gaussian_blur_5x5` | 5x5高斯模糊 | - |
+| `simd_pipeline_process` | 流水线处理 | 1.03ms |
+| `simd_benchmark` | 性能基准 | - |
+| `simd_get_backend` | 后端检测 | - |
+| `simd_get_backend_name` | 后端名称 | - |
+| `simd_is_supported` | 后端支持检查 | - |
+
+### GPU Compute Shader (新增2个)
+
+| Shader | 平台 | 功能 |
+|--------|------|------|
+| `vulkan_compute.cpp` | Linux (NVIDIA/AMD) | Compute Shader |
+| `metal_compute.mm` | macOS/iOS | Metal Shader |
+
+### 3D体绘制 (新增)
+
+| 功能 | 说明 |
+|------|------|
+| 光线投射 | Ray Casting医学可视化 |
+| 最大密度投影 | MIP PET-CT融合 |
+| Alpha合成 | 软组织渲染 |
+| 预定义传输函数 | CT骨骼/软组织/肺/血管/PET代谢 |
+
+### 示例程序 (新增2个)
+
+| 程序 | 路径 | 说明 |
+|------|------|------|
+| `surgical_video_demo` | `examples/linux/` | 术野视频增强演示 |
+| `v4l2_capture_demo` | `examples/linux/` | V4L2实时采集演示 |
+| `test_simd_benchmark` | `tests/` | SIMD性能基准测试 |
+
+### 文档 (新增3份)
+
+| 文档 | 说明 |
+|------|------|
+| `PERFORMANCE.md` | 性能优化报告 |
+| `API_REFERENCE_V2.md` | v2.0 API完整参考 |
+| `EXAMPLES.md` | 示例程序使用指南 |
+
+### 测试用例 (新增23个)
+
+| 测试套件 | 用例数 | 说明 |
+|----------|--------|------|
+| `SIMDBrightnessContrastBenchmark` | 3 | 亮度/对比度 |
+| `SIMDSaturationBenchmark` | 3 | 饱和度 |
+| `SIMDGrayscaleBenchmark` | 3 | RGB转灰度 |
+| `SIMDGsdfLutBenchmark` | 3 | GSDF查表 |
+| `SIMDSobelBenchmark` | 3 | 边缘检测 |
+| `SIMDBloodlessBenchmark` | 3 | 无血术野 |
+| `SIMDPipelineBenchmark` | 3 | 流水线 |
+| `SIMDPerformanceComparison` | 1 | 全性能对比 |
+| `SIMDBackendTest` | 1 | 后端检测 |
+
+### 性能提升
+
+| 功能 | v1.0 | v2.0 | 提升 |
+|------|-------|-------|------|
+| 亮度/对比度 | 标量 | SIMD | **4-8x** |
+| 全流水线 | 无 | SIMD流水线 | **新增** |
+| 1920x1080处理 | ~20ms | 7.42ms | **2.7x** |
+| GPU加速 | CPU Fallback | Vulkan/Metal | **5-10x** (目标) |
+
+### 测试验证
+
+- **CTest**: 104/104 通过 (100%)
+- **SIMD基准**: 23/23 通过
+- **性能基准**: 1920x1080 @ 135fps (CPU)

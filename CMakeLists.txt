@@ -72,6 +72,7 @@ add_subdirectory(sdk/federated)
 add_subdirectory(sdk/surgical_video)
 add_subdirectory(sdk/ar_overlay)
 add_subdirectory(sdk/digital_twin)
+add_subdirectory(sdk/performance)
 
 # Platform-specific
 if(BUILD_PLATFORM_LINUX OR (CMAKE_SYSTEM_NAME MATCHES "Linux"))
