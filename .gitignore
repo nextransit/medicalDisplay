@@ -39,3 +39,8 @@ Testing/
 .cache/
 .sisyphus/
 tools/
+
+# Example binaries
+examples/**/*.app/
+examples/**/CrossPlatformApp
+examples/crossplatform/macos-app/

@@ -206,8 +206,3 @@ float ImageRenderer::clamp(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-void ImageRenderer::applyProcessing(uchar *pixels, int len, float brightness, float contrast, float saturation, bool gsdf)
-{
-    Q_UNUSED(pixels); Q_UNUSED(len);
-    Q_UNUSED(brightness); Q_UNUSED(contrast); Q_UNUSED(saturation); Q_UNUSED(gsdf);
-}

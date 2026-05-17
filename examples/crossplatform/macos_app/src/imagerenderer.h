@@ -56,7 +56,6 @@ private:
 
     static float smoothstep(float edge0, float edge1, float x);
     static float clamp(float v, float lo, float hi);
-    static void applyProcessing(uchar *pixels, int len, float brightness, float contrast, float saturation, bool gsdf);
 
     std::atomic<int> m_modality{0};
     std::atomic<float> m_brightness{0.0f};

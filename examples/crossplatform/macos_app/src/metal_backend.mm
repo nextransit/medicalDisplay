@@ -169,6 +169,29 @@ kernel void render_medical(
 // ---- C++ 接口 ----
 extern "C" {
 
+// 统一上下文结构体（避免每个函数重复定义）
+struct MetalContext {
+    id<MTLDevice> device;
+    id<MTLCommandQueue> queue;
+    id<MTLComputePipelineState> pipeline;
+    id<MTLTexture> texture;
+    int width;
+    int height;
+};
+
+struct RenderParamsC {
+    unsigned int width;
+    unsigned int height;
+    float brightness;
+    float contrast;
+    float saturation;
+    int enableGsdf;
+    int enableBloodless;
+    float bloodSuppress;
+    float tissueEnhance;
+    int modality;
+};
+
 void* metal_init(int width, int height) {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
@@ -208,16 +231,6 @@ void* metal_init(int width, int height) {
     desc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
     id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
 
-    // 打包返回结构体
-    struct MetalContext {
-        id<MTLDevice> device;
-        id<MTLCommandQueue> queue;
-        id<MTLComputePipelineState> pipeline;
-        id<MTLTexture> texture;
-        int width;
-        int height;
-    };
-
     auto* ctx = new MetalContext();
     ctx->device = device;
     ctx->queue = queue;
@@ -230,29 +243,7 @@ void* metal_init(int width, int height) {
     return ctx;
 }
 
-struct RenderParamsC {
-    unsigned int width;
-    unsigned int height;
-    float brightness;
-    float contrast;
-    float saturation;
-    int enableGsdf;
-    int enableBloodless;
-    float bloodSuppress;
-    float tissueEnhance;
-    int modality;
-};
-
 void metal_render(void* ctx_ptr, const RenderParamsC* params, void* out_pixels) {
-    struct MetalContext {
-        id<MTLDevice> device;
-        id<MTLCommandQueue> queue;
-        id<MTLComputePipelineState> pipeline;
-        id<MTLTexture> texture;
-        int width;
-        int height;
-    };
-
     if (!ctx_ptr || !params) return;
     auto* ctx = (MetalContext*)ctx_ptr;
 
@@ -287,29 +278,18 @@ void metal_render(void* ctx_ptr, const RenderParamsC* params, void* out_pixels) 
 
 void metal_destroy(void* ctx_ptr) {
     if (!ctx_ptr) return;
-    struct MetalContext {
-        id<MTLDevice> device;
-        id<MTLCommandQueue> queue;
-        id<MTLComputePipelineState> pipeline;
-        id<MTLTexture> texture;
-        int width;
-        int height;
-    };
-    auto* ctx = (MetalContext*)ctx_ptr;
-    delete ctx;
+    delete (MetalContext*)ctx_ptr;
     printf("[Metal] 资源已释放\n");
 }
 
 int metal_get_width(void* ctx_ptr) {
     if (!ctx_ptr) return 0;
-    struct MetalContext { id<MTLDevice> d; id<MTLCommandQueue> q; id<MTLComputePipelineState> p; id<MTLTexture> t; int w, h; };
-    return ((MetalContext*)ctx_ptr)->w;
+    return ((MetalContext*)ctx_ptr)->width;
 }
 
 int metal_get_height(void* ctx_ptr) {
     if (!ctx_ptr) return 0;
-    struct MetalContext { id<MTLDevice> d; id<MTLCommandQueue> q; id<MTLComputePipelineState> p; id<MTLTexture> t; int w, h; };
-    return ((MetalContext*)ctx_ptr)->h;
+    return ((MetalContext*)ctx_ptr)->height;
 }
 
 } // extern "C"
