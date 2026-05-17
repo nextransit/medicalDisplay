@@ -28,6 +28,15 @@ else()
     message(STATUS "使用 Qt6: ${Qt6_VERSION}")
 endif()
 
+# 确保 QtConcurrent 模块明确声明依赖
+if(QT_VERSION_MAJOR EQUAL 6)
+    find_package(Qt6 REQUIRED COMPONENTS Concurrent)
+    message(STATUS "Qt6 Concurrent: ${Qt6Concurrent_VERSION}")
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Concurrent)
+    message(STATUS "Qt5 Concurrent: ${Qt5Concurrent_VERSION}")
+endif()
+
 # ---- 源文件 ----
 set(APP_SOURCES
     src/main.cpp

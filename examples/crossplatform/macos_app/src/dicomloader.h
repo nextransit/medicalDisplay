@@ -8,6 +8,23 @@
 #include <cstdint>
 
 /**
+ * DICOM 压缩类型枚举
+ */
+enum class CompressionType {
+    Uncompressed,
+    RLE_Lossless,
+    JPEG_Baseline,
+    JPEG_Extended,
+    JPEG_Lossless,
+    JPEG_Lossless_SV1,
+    JPEG_LS_Lossless,
+    JPEG_LS_Lossy,
+    JPEG2000_Lossless,
+    JPEG2000_Lossy,
+    Unknown
+};
+
+/**
  * DICOM 文件加载器 + ImageProvider
  *
  * 支持:
@@ -15,6 +32,10 @@
  *   - 显式/隐式 VR 传输语法
  *   - 小端/大端字节序
  *   - 无压缩像素数据 (Raw/Monochrome/RGB)
+ *   - RLE 无损压缩解码
+ *   - JPEG 基线压缩解码 (macOS ImageIO)
+ *   - JPEG 2000 / JPEG-LS 占位符（返回错误）
+ *   - 多帧 DICOM 浏览
  *   - image://dicom/current 供 QML Image 使用
  */
 class DicomLoader : public QQuickImageProvider {
@@ -29,6 +50,8 @@ class DicomLoader : public QQuickImageProvider {
     Q_PROPERTY(int imageHeight READ imageHeight NOTIFY fileLoaded)
     Q_PROPERTY(float windowCenter READ windowCenter NOTIFY fileLoaded)
     Q_PROPERTY(float windowWidth READ windowWidth NOTIFY fileLoaded)
+    Q_PROPERTY(int frameCount READ frameCount NOTIFY fileLoaded)
+    Q_PROPERTY(int currentFrame READ currentFrame NOTIFY frameChanged)
 
 public:
     explicit DicomLoader();
@@ -46,6 +69,8 @@ public:
     int imageHeight() const { return m_image.height(); }
     float windowCenter() const { return m_wlCenter; }
     float windowWidth() const { return m_wlWidth; }
+    int frameCount() const { return m_frameCount; }
+    int currentFrame() const { return m_currentFrame; }
 
     QImage image() const { return m_image; }
 
@@ -53,10 +78,14 @@ public slots:
     void loadFile(const QString &path);
     void loadUrl(const QUrl &url);
     void applyWindowLevel(float center, float width);
+    void nextFrame();
+    void prevFrame();
+    void setFrame(int frame);
 
 signals:
     void fileLoaded();
     void errorOccurred(const QString &message);
+    void frameChanged();
 
 private:
     struct DicomTag {
@@ -66,10 +95,19 @@ private:
         const uint8_t *data;
     };
 
+    struct FrameInfo {
+        const uint8_t *data;   // 指向帧数据（可能已压缩）
+        uint32_t length;       // 帧数据长度
+    };
+
     bool parseFile(const std::vector<uint8_t> &buffer);
     bool readTag(const uint8_t *&ptr, const uint8_t *end,
                  bool explicitVR, bool bigEndian, DicomTag &tag);
+    void parseFrameData();
     void decodePixels(const DicomTag &pixelTag);
+    bool decodeUncompressed(const uint8_t *data, uint32_t dataLen);
+    bool decodeRLE(const uint8_t *data, uint32_t dataLen);
+    bool decodeJPEG(const uint8_t *data, uint32_t dataLen);
     void applyRescaleSlope();
     void buildDisplayImage();
 
@@ -77,9 +115,11 @@ private:
     uint16_t readUint16Tag(uint16_t group, uint16_t element) const;
     float readFloatTag(uint16_t group, uint16_t element) const;
 
+    static CompressionType transferSyntaxToCompression(const QString &ts);
+
     QString m_filePath;
     QImage m_image;
-    std::vector<uint8_t> m_rawData;
+    std::vector<uint8_t> m_rawData;      // 完整文件缓冲区
     std::vector<float> m_floatPixels;
     std::vector<DicomTag> m_tags;
 
@@ -94,6 +134,20 @@ private:
     QString m_photoInterp;
     bool m_bigEndianTransfer = false;
     bool m_explicitVR = true;
+
+    // 传输语法与压缩
+    QString m_transferSyntax;
+    CompressionType m_compression = CompressionType::Uncompressed;
+    bool m_isEncapsulated = false;
+
+    // 多帧相关
+    int m_frameCount = 1;
+    int m_currentFrame = 0;
+    std::vector<FrameInfo> m_frameData;  // 每帧数据的指针和长度
+
+    // 像素数据原始引用
+    const uint8_t *m_pixelDataPtr = nullptr;
+    uint32_t m_pixelDataLen = 0;
 
     // Rescale
     float m_rescaleSlope = 1.0f;

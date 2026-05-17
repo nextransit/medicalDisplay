@@ -3,11 +3,16 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
 /**
- * 侧边栏 — 模态选择 + 系统状态
+ * 侧边栏 — 模态选择 + 系统状态 + 文件操作
+ *
+ * 暴露函数供 MainWindow 快捷键调用
  */
 
 Rectangle {
     id: root
+
+    // 暴露给 MainWindow 快捷键调用
+    function openFileDialog() { fileOpenDialog.open() }
     color: mainWindow.colorSurface
     radius: mainWindow.radiusLg
 
@@ -174,8 +179,7 @@ Rectangle {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                mainWindow.currentModality = idx
-                                mainWindow.aiModality = mainWindow.modalityNames[idx]
+                                mainWindow.switchModality(idx)
                             }
                         }
                     }
@@ -185,6 +189,93 @@ Rectangle {
 
         // ---- 弹性空间 ----
         Item { Layout.fillHeight: true }
+
+        // ---- DICOM 加载指示 ----
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: mainWindow.currentModality === 4 ? 48 : 0
+            Layout.topMargin: mainWindow.currentModality === 4 ? mainWindow.spacingSm : 0
+            radius: mainWindow.radiusMd
+            color: Qt.rgba(0, 0.83, 0.67, 0.08)
+            border.width: 1
+            border.color: Qt.rgba(0, 0.83, 0.67, 0.2)
+            visible: mainWindow.currentModality === 4
+            clip: true
+
+            Behavior on Layout.preferredHeight {
+                NumberAnimation { duration: 250; easing.type: Easing.OutCubic }
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 8
+                visible: mainWindow.currentModality === 4
+
+                Label {
+                    text: "📂"
+                    font.pixelSize: 16
+                }
+                ColumnLayout {
+                    spacing: 0
+                    Label {
+                        text: "DICOM 已加载"
+                        color: mainWindow.colorAccent
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                    }
+                    Label {
+                        text: Dicom.hasImage ? Dicom.patientName : ""
+                        color: mainWindow.colorTextMuted
+                        font.pixelSize: 9
+                        elide: Text.ElideRight
+                        Layout.preferredWidth: 130
+                    }
+                }
+            }
+        }
+
+        // ---- 📂 打开文件按钮 ----
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            Layout.topMargin: mainWindow.spacingSm
+            radius: mainWindow.radiusMd
+            color: mainWindow.colorElevated
+            border.width: 1
+            border.color: Qt.rgba(0, 0.83, 0.67, 0.25)
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: fileOpenDialog.open()
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                spacing: 8
+
+                Label {
+                    text: "📂"
+                    font.pixelSize: 14
+                }
+                Label {
+                    text: "打开 DICOM 文件"
+                    color: mainWindow.colorAccent
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: "⌘O"
+                    color: mainWindow.colorTextMuted
+                    font.pixelSize: 10
+                    font.family: "Menlo, Monaco, monospace"
+                }
+            }
+        }
 
         // ---- 底部状态区 ----
         Rectangle {
@@ -246,4 +337,33 @@ Rectangle {
             }
         }
     }
+
+    // ---- 文件打开对话框 (Qt Quick Dialog + TextField 路径输入) ----
+    Dialog {
+        id: fileOpenDialog
+        title: "打开 DICOM 文件"
+        width: 500; height: 150
+        modal: true
+        standardButtons: Dialog.Open | Dialog.Cancel
+        ColumnLayout {
+            anchors.fill: parent; spacing: 12
+            Label { text: "输入 DICOM 文件路径:"; color: mainWindow.colorTextPrimary; font.pixelSize: 12 }
+            TextField {
+                id: filePathInput; Layout.fillWidth: true
+                placeholderText: "/path/to/image.dcm"
+                color: mainWindow.colorTextPrimary
+                background: Rectangle { color: mainWindow.colorElevated; radius: mainWindow.radiusSm; border.width: 1; border.color: mainWindow.colorBorder }
+            }
+        }
+        onAccepted: {
+            if (filePathInput.text.length > 0) {
+                Dicom.loadFile(filePathInput.text)
+                mainWindow.currentModality = 4
+                mainWindow.aiModality = "DICOM 影像"
+                filePathInput.text = ""
+            }
+        }
+        onRejected: filePathInput.text = ""
+    }
+
 }

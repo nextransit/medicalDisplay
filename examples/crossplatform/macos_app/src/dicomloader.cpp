@@ -356,7 +356,36 @@ void DicomLoader::applyWindowLevel(float center, float width)
     m_wlCenter = center;
     m_wlWidth = width;
     buildDisplayImage();
-    emit fileLoaded();  // 通知 QML 刷新
+    emit fileLoaded();
+}
+
+// ---- 多帧导航 ----
+
+void DicomLoader::nextFrame() {
+    if (m_frameCount <= 1) return;
+    int next = m_currentFrame + 1;
+    if (next >= m_frameCount) next = 0;
+    setFrame(next);
+}
+
+void DicomLoader::prevFrame() {
+    if (m_frameCount <= 1) return;
+    int prev = m_currentFrame - 1;
+    if (prev < 0) prev = m_frameCount - 1;
+    setFrame(prev);
+}
+
+void DicomLoader::setFrame(int frame) {
+    if (frame < 0 || frame >= m_frameCount) return;
+    if (frame == m_currentFrame) return;
+    m_currentFrame = frame;
+    if (!m_frameData.empty() && static_cast<size_t>(frame) < m_frameData.size()) {
+        auto &fi = m_frameData[frame];
+        decodePixels({0x7FE0, 0x0010, fi.length, fi.data});
+    }
+    buildDisplayImage();
+    emit frameChanged();
+    emit fileLoaded();
 }
 
 // ---- 标签读取辅助 ----
@@ -378,7 +407,13 @@ uint16_t DicomLoader::readUint16Tag(uint16_t group, uint16_t element) const
 {
     for (auto &t : m_tags) {
         if (t.group == group && t.element == element && t.length >= 2 && t.data) {
-            return (t.data[0] << 8) | t.data[1];  // 假设大端（DICOM 字符串为 ASCII）
+            // DICOM 显式 VR Little Endian 中 16-bit 数值为小端字节序
+            // 大端传输语法则使用大端
+            if (m_bigEndianTransfer) {
+                return (t.data[0] << 8) | t.data[1];
+            } else {
+                return (t.data[1] << 8) | t.data[0];
+            }
         }
     }
     return 0;
@@ -388,6 +423,12 @@ float DicomLoader::readFloatTag(uint16_t group, uint16_t element) const
 {
     QString s = readStringTag(group, element);
     if (s.isEmpty()) return 0.0f;
+
+    // DICOM DS (Decimal String) 可能包含多个值（用 \ 分隔），取第一个
+    int slashPos = s.indexOf('\\');
+    if (slashPos >= 0) {
+        s = s.left(slashPos);
+    }
 
     bool ok = false;
     float val = s.toFloat(&ok);

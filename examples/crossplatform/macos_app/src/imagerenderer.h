@@ -71,6 +71,7 @@ private:
     // 图像生成核心算法
     void generateOnCPU(int width, int height);
     bool generateOnGPU(int width, int height);  // Metal 路径
+    void recreateMetalContext(int w, int h);    // 动态重建 Metal 纹理
 
     static float smoothstep(float edge0, float edge1, float x);
     static float clamp(float v, float lo, float hi);
@@ -93,4 +94,6 @@ private:
     // Metal GPU 上下文
     void *m_metalCtx = nullptr;
     bool m_hasGPU = false;
+    int m_metalW = 800;
+    int m_metalH = 700;
 };

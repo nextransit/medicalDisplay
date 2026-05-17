@@ -5,5 +5,7 @@
         <file>qml/Sidebar.qml</file>
         <file>qml/InfoPanel.qml</file>
         <file>qml/ImageViewport.qml</file>
+        <file>qml/AboutDialog.qml</file>
+        <file>qml/MeasurementOverlay.qml</file>
     </qresource>
 </RCC>

@@ -3,7 +3,7 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
 /**
- * 右侧面板 — AI 分析结果 + 显示参数控制
+ * 右侧面板 — AI 分析结果 + 显示参数控制 + 测量工具
  */
 
 Rectangle {
@@ -39,96 +39,404 @@ Rectangle {
             width: parent.width
             spacing: mainWindow.spacingMd
 
-            // ---- AI 识别标题 ----
-            SectionHeader {
-                icon: "🤖"
-                title: "AI 智能识别"
-                subtitle: "Deep Learning Analysis"
+            // ═══════════════════════════════════════
+            // DICOM 元数据 (当加载 DICOM 文件时)
+            // ═══════════════════════════════════════
+
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Dicom.hasImage ? implicitHeight : 0
+                visible: Dicom.hasImage
+                implicitHeight: dicomMetaSection.implicitHeight
+
+                ColumnLayout {
+                    id: dicomMetaSection
+                    width: parent.width
+                    spacing: mainWindow.spacingMd
+
+                    SectionHeader {
+                        icon: "📋"
+                        title: "DICOM 信息"
+                        subtitle: "DICOM Metadata"
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: dicomMetaGrid.implicitHeight + 24
+                        radius: mainWindow.radiusMd
+                        color: mainWindow.colorElevated
+                        border.width: 1
+                        border.color: Qt.rgba(0.18, 0.47, 0.91, 0.15)
+
+                        GridLayout {
+                            id: dicomMetaGrid
+                            anchors.fill: parent
+                            anchors.margins: 14
+                            columns: 2
+                            rowSpacing: 6
+                            columnSpacing: 12
+
+                            MetaField { label: "患者姓名"; value: Dicom.patientName || "—" }
+                            MetaField { label: "患者 ID"; value: Dicom.patientId || "—" }
+                            MetaField { label: "模态"; value: Dicom.modality || "—" }
+                            MetaField { label: "检查描述"; value: Dicom.studyDesc || "—" }
+                            MetaField { label: "图像尺寸"; value: Dicom.imageWidth + " × " + Dicom.imageHeight }
+                            MetaField { label: "原始窗宽"; value: mainWindow.wlWidthOrig.toFixed(0) }
+                            MetaField { label: "原始窗位"; value: mainWindow.wlCenterOrig.toFixed(0) }
+                            MetaField { label: "当前窗宽"; value: mainWindow.wlWidth.toFixed(0) }
+                            MetaField { label: "当前窗位"; value: mainWindow.wlCenter.toFixed(0) }
+                        }
+                    }
+
+                    // 分隔
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: mainWindow.colorBorder
+                    }
+                }
             }
 
-            // ---- 识别结果卡片 ----
+            // ═══════════════════════════════════════
+            // AI 识别 (仅在无 DICOM 时显示)
+            // ═══════════════════════════════════════
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: !Dicom.hasImage
+                spacing: mainWindow.spacingMd
+
+                SectionHeader {
+                    icon: "🤖"
+                    title: "AI 智能识别"
+                    subtitle: "Deep Learning Analysis"
+                }
+
+                // 识别结果卡片
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 100
+                    radius: mainWindow.radiusMd
+                    color: mainWindow.colorElevated
+                    border.width: 1
+                    border.color: Qt.rgba(0, 0.83, 0.67, 0.15)
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 6
+
+                        RowLayout {
+                            spacing: 8
+                            Rectangle {
+                                width: 40; height: 40; radius: 10
+                                color: Qt.rgba(0, 0.83, 0.67, 0.15)
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: mainWindow.modalityIcons[mainWindow.currentModality]
+                                    font.pixelSize: 22
+                                }
+                            }
+                            ColumnLayout {
+                                spacing: 1
+                                Label {
+                                    text: mainWindow.aiModality
+                                    color: mainWindow.colorAccent
+                                    font.pixelSize: 18
+                                    font.weight: Font.Bold
+                                }
+                                Label {
+                                    text: "识别模态"
+                                    color: mainWindow.colorTextMuted
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            spacing: 8
+                            Label {
+                                text: "置信度"
+                                color: mainWindow.colorTextSecondary
+                                font.pixelSize: 12
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 6
+                                radius: 3
+                                color: mainWindow.colorBorder
+
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width * mainWindow.aiConfidence
+                                    radius: 3
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: mainWindow.colorAccentDim }
+                                        GradientStop { position: 1.0; color: mainWindow.colorAccent }
+                                    }
+
+                                    Behavior on width {
+                                        NumberAnimation { duration: 400; easing.type: Easing.OutCubic }
+                                    }
+                                }
+                            }
+
+                            Label {
+                                text: Math.round(mainWindow.aiConfidence * 100) + "%"
+                                color: mainWindow.colorSuccess
+                                font.pixelSize: 12
+                                font.weight: Font.DemiBold
+                            }
+                        }
+                    }
+                }
+
+                // 分隔
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: mainWindow.colorBorder
+                }
+            }
+
+            // ═══════════════════════════════════════
+            // 测量工具
+            // ═══════════════════════════════════════
+
+            SectionHeader {
+                icon: "📏"
+                title: "测量工具"
+                subtitle: "Measurement Tools"
+            }
+
+            // 工具切换按钮
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                ToolButton {
+                    text: "⊘"
+                    tooltip: "无 / 窗宽窗位调节"
+                    checked: mainWindow.measureTool === 0
+                    onClicked: mainWindow.measureTool = 0
+                }
+                ToolButton {
+                    text: "←→"
+                    tooltip: "距离测量 (点击两点)"
+                    checked: mainWindow.measureTool === 1
+                    onClicked: mainWindow.measureTool = 1
+                }
+                ToolButton {
+                    text: "∠"
+                    tooltip: "角度测量 (点击三点: 边-顶点-边)"
+                    checked: mainWindow.measureTool === 2
+                    onClicked: mainWindow.measureTool = 2
+                }
+                ToolButton {
+                    text: "▭"
+                    tooltip: "ROI 矩形 (拖拽绘制)"
+                    checked: mainWindow.measureTool === 3
+                    onClicked: mainWindow.measureTool = 3
+                }
+            }
+
+            // 当前模式提示
+            Label {
+                Layout.fillWidth: true
+                text: {
+                    switch (mainWindow.measureTool) {
+                        case 0: return "窗宽窗位调节模式 — 拖拽/滚轮调节";
+                        case 1: return "距离测量 — 点击影像上的两点";
+                        case 2: return "角度测量 — 依次点击三条边的三个点";
+                        case 3: return "ROI 测量 — 拖拽绘制矩形区域";
+                        default: return "";
+                    }
+                }
+                color: mainWindow.colorTextMuted
+                font.pixelSize: 9
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            // 测量结果列表
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 100
+                Layout.preferredHeight: Math.min(Math.max(measurementModel.count * 52, 40), 200)
                 radius: mainWindow.radiusMd
                 color: mainWindow.colorElevated
-                border.width: 1
-                border.color: Qt.rgba(0, 0.83, 0.67, 0.15)
+                visible: measurementModel.count > 0
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 14
-                    spacing: 6
+                    anchors.margins: 8
+                    spacing: 4
 
-                    // 模态标签
+                    // 列表标题 + 清除按钮
                     RowLayout {
+                        Layout.fillWidth: true
                         spacing: 8
-                        Rectangle {
-                            width: 40; height: 40; radius: 10
-                            color: Qt.rgba(0, 0.83, 0.67, 0.15)
-
-                            Label {
-                                anchors.centerIn: parent
-                                text: mainWindow.modalityIcons[mainWindow.currentModality]
-                                font.pixelSize: 22
-                            }
-                        }
-                        ColumnLayout {
-                            spacing: 1
-                            Label {
-                                text: mainWindow.aiModality
-                                color: mainWindow.colorAccent
-                                font.pixelSize: 18
-                                font.weight: Font.Bold
-                            }
-                            Label {
-                                text: "识别模态"
-                                color: mainWindow.colorTextMuted
-                                font.pixelSize: 10
-                            }
-                        }
-                    }
-
-                    // 置信度条
-                    RowLayout {
-                        spacing: 8
-                        Label {
-                            text: "置信度"
-                            color: mainWindow.colorTextSecondary
-                            font.pixelSize: 12
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 6
-                            radius: 3
-                            color: mainWindow.colorBorder
-
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.top: parent.top
-                                anchors.bottom: parent.bottom
-                                width: parent.width * mainWindow.aiConfidence
-                                radius: 3
-                                gradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: mainWindow.colorAccentDim }
-                                    GradientStop { position: 1.0; color: mainWindow.colorAccent }
-                                }
-
-                                Behavior on width {
-                                    NumberAnimation { duration: 400; easing.type: Easing.OutCubic }
-                                }
-                            }
-                        }
 
                         Label {
-                            text: Math.round(mainWindow.aiConfidence * 100) + "%"
-                            color: mainWindow.colorSuccess
-                            font.pixelSize: 12
+                            text: "测量结果 (" + measurementModel.count + ")"
+                            color: mainWindow.colorTextPrimary
+                            font.pixelSize: 11
                             font.weight: Font.DemiBold
                         }
+
+                        Item { Layout.fillWidth: true }
+
+                        // 清除按钮
+                        Rectangle {
+                            width: clearLabel.implicitWidth + 16
+                            height: 22
+                            radius: mainWindow.radiusSm
+                            color: clearMouse.containsMouse
+                                ? Qt.rgba(0.93, 0.27, 0.27, 0.2)
+                                : Qt.rgba(0.93, 0.27, 0.27, 0.08)
+
+                            Behavior on color {
+                                ColorAnimation { duration: 150 }
+                            }
+
+                            Label {
+                                id: clearLabel
+                                anchors.centerIn: parent
+                                text: "清除全部"
+                                color: clearMouse.containsMouse ? mainWindow.colorDanger : mainWindow.colorTextMuted
+                                font.pixelSize: 10
+                            }
+
+                            MouseArea {
+                                id: clearMouse
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                hoverEnabled: true
+                                onClicked: mainWindow.clearAllMeasurements()
+                            }
+                        }
                     }
+
+                    // 测量列表
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        ScrollBar.vertical.policy: measurementModel.count > 3
+                            ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+
+                        ColumnLayout {
+                            width: parent.width
+                            spacing: 2
+
+                            Repeater {
+                                id: measureRepeater
+                                model: measurementModel
+
+                                delegate: Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 36
+                                    radius: mainWindow.radiusSm
+                                    color: measureItemMouse.containsMouse
+                                        ? Qt.rgba(1, 1, 1, 0.04) : "transparent"
+
+                                    Behavior on color {
+                                        ColorAnimation { duration: 150 }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 4
+                                        spacing: 6
+
+                                        // 类型图标
+                                        Label {
+                                            text: {
+                                                switch (model.type) {
+                                                    case "distance": return "←→";
+                                                    case "angle": return "∠";
+                                                    case "roi": return "▭";
+                                                    default: return "●";
+                                                }
+                                            }
+                                            color: model.lineColor || mainWindow.colorAccent
+                                            font.pixelSize: 12
+                                            Layout.preferredWidth: 20
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
+
+                                        // 数值
+                                        Label {
+                                            text: model.value
+                                            color: mainWindow.colorTextPrimary
+                                            font.pixelSize: 11
+                                            Layout.fillWidth: true
+                                            elide: Text.ElideRight
+                                        }
+
+                                        // 删除按钮
+                                        Rectangle {
+                                            width: 20; height: 20
+                                            radius: 4
+                                            color: deleteMouse.containsMouse
+                                                ? Qt.rgba(0.93, 0.27, 0.27, 0.15)
+                                                : "transparent"
+
+                                            Behavior on color {
+                                                ColorAnimation { duration: 150 }
+                                            }
+
+                                            Label {
+                                                anchors.centerIn: parent
+                                                text: "×"
+                                                color: deleteMouse.containsMouse
+                                                    ? mainWindow.colorDanger
+                                                    : mainWindow.colorTextMuted
+                                                font.pixelSize: 14
+                                                font.weight: Font.Bold
+                                            }
+
+                                            MouseArea {
+                                                id: deleteMouse
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                hoverEnabled: true
+                                                onClicked: mainWindow.removeMeasurementAt(model.index)
+                                            }
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: measureItemMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        acceptedButtons: Qt.NoButton
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 空状态
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                radius: mainWindow.radiusSm
+                color: "transparent"
+                visible: measurementModel.count === 0
+
+                Label {
+                    anchors.centerIn: parent
+                    text: "暂无测量 — 选择工具开始测量"
+                    color: mainWindow.colorTextMuted
+                    font.pixelSize: 10
                 }
             }
 
@@ -139,7 +447,10 @@ Rectangle {
                 color: mainWindow.colorBorder
             }
 
-            // ---- 显示参数 ----
+            // ═══════════════════════════════════════
+            // 显示参数
+            // ═══════════════════════════════════════
+
             SectionHeader {
                 icon: "🖥️"
                 title: "显示参数"
@@ -245,7 +556,9 @@ Rectangle {
         }
     }
 
-    // ---- 子组件 ----
+    // ═══════════════════════════════════════
+    // 子组件
+    // ═══════════════════════════════════════
 
     component SectionHeader: RowLayout {
         property string icon
@@ -428,6 +741,103 @@ Rectangle {
             color: mainWindow.colorTextPrimary
             font.pixelSize: 12
             font.weight: Font.DemiBold
+        }
+    }
+
+    component MetaField: ColumnLayout {
+        property string label
+        property string value
+
+        Layout.fillWidth: true
+        spacing: 0
+
+        Label {
+            text: label
+            color: mainWindow.colorTextMuted
+            font.pixelSize: 9
+        }
+        Label {
+            text: value
+            color: mainWindow.colorTextPrimary
+            font.pixelSize: 11
+            font.weight: Font.DemiBold
+            elide: Text.ElideRight
+            Layout.fillWidth: true
+        }
+    }
+
+    component ToolButton: Rectangle {
+        property string text
+        property string tooltip
+        property alias checked: toolBtnArea.checked
+        signal clicked()
+
+        Layout.fillWidth: true
+        Layout.preferredHeight: 36
+        radius: mainWindow.radiusSm
+
+        // 根据类型使用不同颜色
+        property color accentColor: {
+            switch (text) {
+                case "⊘": return mainWindow.colorTextSecondary;
+                case "←→": return "#00d4aa";    // 距离: 青色
+                case "∠": return "#f59e0b";     // 角度: 琥珀
+                case "▭": return "#3b82f6";     // ROI: 蓝色
+                default: return mainWindow.colorAccent;
+            }
+        }
+
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop {
+                position: 0.0
+                color: checked ? Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.15)
+                               : mainWindow.colorElevated
+            }
+            GradientStop {
+                position: 1.0
+                color: checked ? Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.08)
+                               : mainWindow.colorElevated
+            }
+        }
+
+        border.width: checked ? 1 : 0
+        border.color: checked ? Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.4)
+                              : "transparent"
+
+        Behavior on gradient {
+            ColorAnimation { duration: 200; easing.type: Easing.OutCubic }
+        }
+        Behavior on border.color {
+            ColorAnimation { duration: 200; easing.type: Easing.OutCubic }
+        }
+
+        Label {
+            anchors.centerIn: parent
+            text: parent.text
+            color: parent.checked ? parent.accentColor : mainWindow.colorTextSecondary
+            font.pixelSize: 14
+            font.weight: parent.checked ? Font.Bold : Font.Normal
+
+            Behavior on color {
+                ColorAnimation { duration: 200; easing.type: Easing.OutCubic }
+            }
+        }
+
+        MouseArea {
+            id: toolBtnArea
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            property bool checked: false
+            onClicked: parent.clicked()
+        }
+
+        // Tooltip
+        ToolTip {
+            visible: toolBtnArea.containsMouse
+            text: parent.tooltip
+            delay: 500
+            font.pixelSize: 11
         }
     }
 }

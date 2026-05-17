@@ -1,6 +1,7 @@
 #include "imagerenderer.h"
 #include <QTimer>
 #include <QDebug>
+#include <QFuture>
 #include <QtConcurrent/QtConcurrent>
 #include <algorithm>
 #include <future>
@@ -138,15 +139,22 @@ void ImageRenderer::processRenderQueue()
     int w = m_viewW.load();
     int h = m_viewH.load();
 
+    // 如果视口尺寸改变，重建 Metal 上下文以匹配新尺寸
+    if (m_hasGPU && (w != m_metalW || h != m_metalH)) {
+        recreateMetalContext(w, h);
+    }
+
     // 显示 loading 状态
     if (!m_loading.exchange(true)) {
         emit loadingChanged();
     }
 
     // 异步生成图像（不阻塞 UI 线程）
-    QtConcurrent::run([this, w, h]() {
+    // 保存 QFuture 返回值以避免 nodiscard 警告
+    QFuture<void> future = QtConcurrent::run([this, w, h]() {
         generateImage(w, h);
     });
+    Q_UNUSED(future)
 }
 
 void ImageRenderer::generateImage(int width, int height)
@@ -173,13 +181,10 @@ bool ImageRenderer::generateOnGPU(int width, int height)
 {
     if (!m_metalCtx) return false;
 
-    // 如果尺寸改变，需要重新创建 Metal 纹理
-    // 简化处理：使用固定 800x700（后续优化动态重建）
-    const int texW = 800, texH = 700;
-
+    // 使用实际视口尺寸（Metal 上下文应已匹配）
     RenderParamsC params;
-    params.width = texW;
-    params.height = texH;
+    params.width = static_cast<unsigned int>(width);
+    params.height = static_cast<unsigned int>(height);
     params.brightness = m_brightness.load();
     params.contrast = m_contrast.load();
     params.saturation = m_saturation.load();
@@ -190,16 +195,16 @@ bool ImageRenderer::generateOnGPU(int width, int height)
     params.modality = m_modality.load();
 
     // 分配输出缓冲
-    std::vector<uint8_t> pixels(texW * texH * 4);
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
 
     metal_render(m_metalCtx, &params, pixels.data());
 
     // Metal 输出是 BGRA8Unorm → 转为 QImage ARGB32
-    QImage img(texW, texH, QImage::Format_ARGB32);
-    for (int y = 0; y < texH; ++y) {
-        auto *src = pixels.data() + y * texW * 4;
+    QImage img(width, height, QImage::Format_ARGB32);
+    for (int y = 0; y < height; ++y) {
+        auto *src = pixels.data() + y * width * 4;
         auto *dst = img.scanLine(y);
-        for (int x = 0; x < texW; ++x) {
+        for (int x = 0; x < width; ++x) {
             int si = x * 4;
             int di = x * 4;
             dst[di + 2] = src[si + 0];   // R (from B)
@@ -209,14 +214,11 @@ bool ImageRenderer::generateOnGPU(int width, int height)
         }
     }
 
-    // 如果需要缩放（视口尺寸 != 纹理尺寸）
-    if (width != texW || height != texH) {
-        img = img.scaled(width, height, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    }
-
+    // 注意：Metal 上下文已匹配视口尺寸，无需缩放
     {
         QMutexLocker lock(&m_mutex);
         m_image = img;
+        m_image.detach();  // 确保深拷贝，避免隐式共享问题
     }
     return true;
 }
@@ -241,6 +243,7 @@ void ImageRenderer::generateOnCPU(int width, int height)
     const int rowsPerThread = (height + numThreads - 1) / numThreads;
 
     std::vector<std::future<void>> futures;
+    futures.reserve(numThreads);  // 预分配避免运行时重新分配
 
     for (int t = 0; t < numThreads; ++t) {
         int yStart = t * rowsPerThread;
@@ -338,6 +341,34 @@ void ImageRenderer::generateOnCPU(int width, int height)
     {
         QMutexLocker lock(&m_mutex);
         m_image = img;
+        m_image.detach();  // 确保深拷贝，避免隐式共享导致跨线程问题
+    }
+}
+
+// ---- Metal 上下文动态重建 ----
+
+void ImageRenderer::recreateMetalContext(int w, int h)
+{
+    if (!m_hasGPU) return;
+
+    // 销毁旧上下文
+    if (m_metalCtx) {
+        metal_destroy(m_metalCtx);
+        m_metalCtx = nullptr;
+    }
+
+    // 使用新尺寸重建
+    m_metalCtx = metal_init(w, h);
+    m_hasGPU = (m_metalCtx != nullptr);
+
+    if (m_hasGPU) {
+        m_metalW = w;
+        m_metalH = h;
+        qDebug() << "[ImageRenderer] Metal 上下文已重建:" << w << "x" << h;
+    } else {
+        qWarning() << "[ImageRenderer] Metal 上下文重建失败，回退到 CPU 渲染";
+        m_metalW = 0;
+        m_metalH = 0;
     }
 }
 
