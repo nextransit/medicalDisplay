@@ -141,6 +141,7 @@ add_medicaldisplay_gtest(test_drm
 
 add_medicaldisplay_gtest(test_gsdf
     test_gsdf.cpp
+    test_gsdf_e2e.cpp
 )
 
 add_medicaldisplay_gtest(test_cloud_security

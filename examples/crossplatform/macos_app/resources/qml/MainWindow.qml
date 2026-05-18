@@ -730,7 +730,7 @@ ApplicationWindow {
                             text: modelData.key
                             color: mainWindow.colorTextPrimary
                             font.pixelSize: 10
-                            font.family: "Menlo, Monaco, monospace"
+                            font.family: "monospace"
                             font.weight: Font.DemiBold
                         }
                     }

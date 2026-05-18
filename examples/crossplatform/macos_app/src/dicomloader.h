@@ -74,6 +74,8 @@ public:
 
     QImage image() const { return m_image; }
 
+    Q_INVOKABLE void openNativeDialog();  // macOS NSOpenPanel / fallback
+
 public slots:
     void loadFile(const QString &path);
     void loadUrl(const QUrl &url);

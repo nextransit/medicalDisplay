@@ -78,6 +78,18 @@ void DicomLoader::loadUrl(const QUrl &url)
     loadFile(url.toLocalFile());
 }
 
+// 原生文件对话框（macOS NSOpenPanel）
+extern "C" int native_open_file_dialog(char *outPath, const char *title, const char *extensions);
+
+void DicomLoader::openNativeDialog()
+{
+    char path[1024] = {};
+    int ret = native_open_file_dialog(path, "打开 DICOM 文件", "dcm;dicom");
+    if (ret == 0 && path[0]) {
+        loadFile(QString::fromUtf8(path));
+    }
+}
+
 bool DicomLoader::parseFile(const std::vector<uint8_t> &buffer)
 {
     const uint8_t *meta = buffer.data() + 132;  // 跳过 preamble + "DICM"

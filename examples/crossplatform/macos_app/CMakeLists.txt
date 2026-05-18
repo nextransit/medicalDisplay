@@ -44,12 +44,14 @@ set(APP_SOURCES
     src/dicomloader.cpp
 )
 
-# macOS Metal 后端
+# macOS Metal 后端 + 原生对话框
 if(APPLE)
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(KIT_FRAMEWORK MetalKit REQUIRED)
-    list(APPEND APP_SOURCES src/metal_backend.mm)
-    set_source_files_properties(src/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(UTTYPE_FRAMEWORK UniformTypeIdentifiers REQUIRED)
+    list(APPEND APP_SOURCES src/metal_backend.mm src/native_dialog.mm)
+    set_source_files_properties(src/metal_backend.mm src/native_dialog.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
     list(APPEND APP_SOURCES src/opengl_backend.cpp)
     find_package(OpenGL REQUIRED)
@@ -82,7 +84,7 @@ if(QT_VERSION_MAJOR EQUAL 6)
 endif()
 
 if(APPLE)
-    target_link_libraries(MedicalDisplayApp PRIVATE ${METAL_FRAMEWORK} ${KIT_FRAMEWORK})
+    target_link_libraries(MedicalDisplayApp PRIVATE ${METAL_FRAMEWORK} ${KIT_FRAMEWORK} ${APPKIT_FRAMEWORK} ${UTTYPE_FRAMEWORK})
 else()
     target_link_libraries(MedicalDisplayApp PRIVATE OpenGL::GL)
 endif()

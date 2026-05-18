@@ -247,6 +247,13 @@ void metal_render(void* ctx_ptr, const RenderParamsC* params, void* out_pixels) 
     if (!ctx_ptr || !params) return;
     auto* ctx = (MetalContext*)ctx_ptr;
 
+    // 尺寸验证：防止纹理尺寸不匹配导致崩溃
+    if (params->width != (unsigned)ctx->width || params->height != (unsigned)ctx->height) {
+        fprintf(stderr, "[Metal] 尺寸不匹配: params=%ux%u texture=%dx%d\n",
+                params->width, params->height, ctx->width, ctx->height);
+        return;
+    }
+
     @autoreleasepool {
         id<MTLCommandBuffer> cmdBuf = [ctx->queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];

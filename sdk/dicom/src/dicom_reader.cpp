@@ -143,7 +143,7 @@ static int read_explicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint8_t* 
             fread(*data, 1, *length, ctx->file);
         }
     } else {
-        *data = NULL;
+        *data = nullptr;
     }
     return 0;
 }
@@ -163,7 +163,7 @@ static int read_implicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint32_t*
             fread(*data, 1, *length, ctx->file);
         }
     } else {
-        *data = NULL;
+        *data = nullptr;
     }
     return 0;
 }
@@ -216,7 +216,7 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
     // Parse elements until we hit pixel data or end of file
     while (!feof(ctx->file)) {
         uint32_t tag, length;
-        uint8_t* data = NULL;
+        uint8_t* data = nullptr;
         uint8_t vr[2] = {0, 0};
         
         if (ctx->implicit_vr) {
@@ -750,7 +750,7 @@ int dicom_apply_modality_lut(int raw_pixel, const uint16_t* lut_data, int lut_en
 const char* dicom_sop_class_to_modality(const char* sop_class_uid) {
     if (!sop_class_uid) return "OT";
     
-    for (int i = 0; SOP_CLASS_MAP[i].uid != NULL; i++) {
+    for (int i = 0; SOP_CLASS_MAP[i].uid != nullptr; i++) {
         if (strcmp(sop_class_uid, SOP_CLASS_MAP[i].uid) == 0) {
             return SOP_CLASS_MAP[i].modality;
         }

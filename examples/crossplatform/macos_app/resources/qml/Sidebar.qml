@@ -11,8 +11,8 @@ import QtQuick.Layouts 1.15
 Rectangle {
     id: root
 
-    // 暴露给 MainWindow 快捷键调用
-    function openFileDialog() { fileOpenDialog.open() }
+    // 暴露给 MainWindow 快捷键调用（优先使用原生对话框）
+    function openFileDialog() { Dicom.openNativeDialog() }
     color: mainWindow.colorSurface
     radius: mainWindow.radiusLg
 

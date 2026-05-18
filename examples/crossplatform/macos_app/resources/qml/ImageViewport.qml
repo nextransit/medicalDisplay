@@ -79,10 +79,13 @@ Rectangle {
         function onGsdfEnabledChanged()  { Renderer.gsdfEnabled = mainWindow.gsdfEnabled; }
     }
 
-    // C++ 端图像更新后刷新显示
+    // C++ 端图像更新后刷新显示（同时刷新 medicalImage 和 dicomOverlay）
     Connections {
         target: Renderer
-        function onImageUpdated() { root.refreshTick++; }
+        function onImageUpdated() {
+            root.refreshTick++;
+            if (Dicom.hasImage) root.dicomTick++;
+        }
     }
 
     // DICOM 文件加载后捕获原始窗宽窗位
