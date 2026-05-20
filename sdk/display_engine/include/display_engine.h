@@ -240,4 +240,15 @@ int display_engine_self_test(DisplayEngine* engine, int test_pattern);
 }
 #endif
 
+// 调试日志宏
+#ifdef DEBUG
+#define MEDDISP_DEBUG(fmt, ...) \
+    fprintf(stderr, "[MEDDISP DEBUG %s:%d] " fmt "\n", \
+            __FILE__, __LINE__, ##__VA_ARGS__)
+#define MEDDISP_DEBUG_LOG_ENABLED 1
+#else
+#define MEDDISP_DEBUG(fmt, ...) ((void)0)
+#define MEDDISP_DEBUG_LOG_ENABLED 0
+#endif
+
 #endif // DISPLAY_ENGINE_H

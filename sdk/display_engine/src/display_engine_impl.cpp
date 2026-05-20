@@ -25,20 +25,6 @@
 #define MEDICALDISPLAY_USE_LINUX_DISPLAY 0
 #endif
 
-// ============================================================================
-// DICOM GSDF Constants (from DICOM Part 14)
-// ============================================================================
-
-static const float GSDF_COEFFICIENTS[7] = {
-    -1.3011877f,
-    -2.5840191e-2f,
-    8.0242636e-2f,
-    -1.0320229e-1f,
-    1.3646699e-2f,
-    2.8745620e-2f,
-    -2.5468404e-3f
-};
-
 // GSDF_L_MIN and GSDF_L_MAX are defined in dicom_gsdf.h
 
 // ============================================================================
@@ -120,125 +106,45 @@ static int apply_public_config(DisplayEngine* engine) {
 // GSDF Implementation
 // ============================================================================
 
-float display_luminance_to_jnd(float luminance) {
-    float L = std::max(static_cast<float>(GSDF_L_MIN), std::min(static_cast<float>(GSDF_L_MAX), luminance));
-    float log10L = std::log10(L);
-    float log10L2 = log10L * log10L;
-    float log10L3 = log10L2 * log10L;
-    float log10L4 = log10L3 * log10L;
-    float log10L5 = log10L4 * log10L;
-    float log10L6 = log10L5 * log10L;
-
-    // DICOM Part 14 GSDF: log10(JND) = a + b*log10(L) + c*(log10(L))^2 + ...
-    float log10Jnd = GSDF_COEFFICIENTS[0] +
-                     GSDF_COEFFICIENTS[1] * log10L +
-                     GSDF_COEFFICIENTS[2] * log10L2 +
-                     GSDF_COEFFICIENTS[3] * log10L3 +
-                     GSDF_COEFFICIENTS[4] * log10L4 +
-                     GSDF_COEFFICIENTS[5] * log10L5 +
-                     GSDF_COEFFICIENTS[6] * log10L6;
-
-    return std::pow(10.0f, log10Jnd);
-}
-
-// [P1-FIX] Precomputed JND→Luminance LUT for stable inverse GSDF
-// Replaces Newton-Raphson iteration (which diverges at L→0) with binary search
-// on a lookup table. Same approach as gsdf_compute.glsl compute shader.
-// The LUT is computed once (lazy init, thread-safe via static mutex).
-
-#define GSDF_INVERSE_LUT_SIZE 4096
-#define GSDF_JND_MAX_FOR_LUT 1023.0f
-
-static float gsdf_inverse_lut[GSDF_INVERSE_LUT_SIZE];
-static bool gsdf_inverse_lut_ready = false;
-static std::mutex gsdf_inverse_lut_mutex;
-
-static void gsdf_inverse_lut_init() {
-    std::lock_guard<std::mutex> lock(gsdf_inverse_lut_mutex);
-    if (gsdf_inverse_lut_ready) return;
-
-    // Build forward LUT: JND index → luminance
-    // JND range [1.0, 1023.0] mapped to [0, LUT_SIZE-1]
-    for (int i = 0; i < GSDF_INVERSE_LUT_SIZE; ++i) {
-        float jnd = 1.0f + static_cast<float>(i) * (GSDF_JND_MAX_FOR_LUT - 1.0f)
-                    / static_cast<float>(GSDF_INVERSE_LUT_SIZE - 1);
-        gsdf_inverse_lut[i] = static_cast<float>(GSDF_L_MIN);
-
-        // Binary search: for each JND index, find L such that jnd(L) ≈ target
-        float target_jnd = jnd;
-        float lo = static_cast<float>(GSDF_L_MIN);
-        float hi = static_cast<float>(GSDF_L_MAX);
-
-        for (int iter = 0; iter < 30; ++iter) {
-            float mid = (lo + hi) * 0.5f;
-            float mid_jnd = display_luminance_to_jnd(mid);
-            if (mid_jnd < target_jnd) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        gsdf_inverse_lut[i] = (lo + hi) * 0.5f;
-    }
-    gsdf_inverse_lut_ready = true;
-}
-
-float display_jnd_to_luminance(float jnd) {
-    // Lazy init the inverse LUT
-    if (!gsdf_inverse_lut_ready) {
-        gsdf_inverse_lut_init();
-    }
-
-    // Clamp JND to valid range
-    float clamped_jnd = std::max(1.0f, std::min(GSDF_JND_MAX_FOR_LUT, jnd));
-
-    // Map JND to LUT index (linear mapping)
-    float idx_f = (clamped_jnd - 1.0f) * static_cast<float>(GSDF_INVERSE_LUT_SIZE - 1)
-                  / (GSDF_JND_MAX_FOR_LUT - 1.0f);
-    int idx_lo = static_cast<int>(idx_f);
-    int idx_hi = std::min(idx_lo + 1, GSDF_INVERSE_LUT_SIZE - 1);
-    float frac = idx_f - static_cast<float>(idx_lo);
-
-    // Linear interpolation
-    return gsdf_inverse_lut[idx_lo] * (1.0f - frac) + gsdf_inverse_lut[idx_hi] * frac;
-}
-
-// [P1-FIX] display_generate_gsdf_lut: 实现真正的 GSDF LUT，而非恒等映射
-// 使用 DICOM Part 14 规定的 GSDF 算法
-// [P2-OPT] 使用 thread_local buffer 避免每次分配
-static thread_local std::unique_ptr<float[]> gsdf_temp_buffer;
-static thread_local size_t gsdf_temp_size = 0;
-
 // [P2-OPT] Thread-local buffer for 3D LUT conversion
 static thread_local std::unique_ptr<uint16_t[]> lut3d_temp_buffer;
 static thread_local size_t lut3d_temp_size = 0;
 
+// [P1-FIX] display_generate_gsdf_lut: 实现真正的 GSDF LUT，而非恒等映射
+// 使用 DICOM Part 14 规定的 Barten 1999 模型算法
+// 将 P-Value (JND 的线性映射) 转为显示器所需的数字驱动电平 (DDL)
 void display_generate_gsdf_lut(float ambient_luminance, float target_luminance,
                                 int bit_depth, uint16_t* output) {
     if (!output) return;
 
     const int lut_size = 1 << bit_depth;
+    
+    // 显示器原生 Gamma。为了使显示器输出正确的绝对亮度，LUT 需要包含反向 Gamma 校准。
+    const float gamma = 2.2f; 
+    
+    float L_min = GSDF_L_MIN;
+    float L_max = std::max(static_cast<float>(GSDF_L_MIN + 1.0f), target_luminance);
 
-    // [P2-OPT] 复用 thread_local buffer 避免重复分配
-    if (gsdf_temp_size < static_cast<size_t>(lut_size)) {
-        gsdf_temp_size = lut_size * 2;  // Overallocate
-        gsdf_temp_buffer = std::make_unique<float[]>(gsdf_temp_size);
-    }
+    // 计算包含环境光反射后的最小/最大 JND
+    float jnd_min = gsdf_luminance_to_jnd(L_min + ambient_luminance);
+    float jnd_max = gsdf_luminance_to_jnd(L_max + ambient_luminance);
 
-    // 生成 P-Value LUT
-    if (gsdf_generate_lut(gsdf_temp_buffer.get(), lut_size, bit_depth,
-                           ambient_luminance, target_luminance) != 0) {
-        // fallback: 简单线性映射
-        for (int i = 0; i < lut_size; ++i) {
-            output[i] = static_cast<uint16_t>(i);
-        }
-        return;
-    }
-
-    // 转换为 uint16_t 输出 (0 到 lut_size-1)
-    const float scale = static_cast<float>(lut_size - 1);
     for (int i = 0; i < lut_size; ++i) {
-        output[i] = static_cast<uint16_t>(gsdf_temp_buffer[i] * scale + 0.5f);
+        // 1. 输入是 DDL（代表 P-Value），将其线性映射到 [jnd_min, jnd_max]
+        float pvalue = static_cast<float>(i) / static_cast<float>(lut_size - 1);
+        float jnd = jnd_min + pvalue * (jnd_max - jnd_min);
+        
+        // 2. 将 JND 转换为目标感知亮度，并减去环境光，得到显示器需要发出的绝对亮度
+        float L_target = gsdf_jnd_to_luminance(jnd) - ambient_luminance;
+        L_target = std::max(L_min, std::min(L_max, L_target));
+        
+        // 3. 将显示亮度归一化到 [0, 1] 范围
+        float L_norm = (L_target - L_min) / (L_max - L_min);
+        
+        // 4. 应用反向 Gamma 曲线，计算出需要发送给显示器的硬件数字驱动电平 (DDL)
+        float ddl_norm = std::pow(L_norm, 1.0f / gamma);
+        
+        output[i] = static_cast<uint16_t>(ddl_norm * static_cast<float>(lut_size - 1) + 0.5f);
     }
 }
 
@@ -651,6 +557,9 @@ void display_engine_reset(DisplayEngine* engine) {
 }
 
 int display_engine_apply_strategy(DisplayEngine* engine, const DisplayStrategy* strategy, ModalityType modality) {
+    MEDDISP_DEBUG("apply_strategy start: gamma=%f, color_space=%d, gsdf_mode=%d, modality=%d",
+                  strategy ? strategy->gamma : 0, strategy ? strategy->color_space : 0,
+                  strategy ? strategy->gsdf_mode : 0, modality);
     if (!engine || !strategy) {
         return -1;
     }
@@ -731,6 +640,7 @@ int display_engine_render_frame(DisplayEngine* engine,
                                 int width,
                                 int height,
                                 int format) {
+    MEDDISP_DEBUG("render_frame start: width=%d, height=%d, format=%d", width, height, format);
     if (!engine || !frame_data || width <= 0 || height <= 0) {
         return -1;
     }
@@ -745,6 +655,7 @@ int display_engine_render_frame(DisplayEngine* engine,
     }
     const int result = display_present(engine->device, frame);
     display_frame_destroy(frame);
+    MEDDISP_DEBUG("render_frame end: result=%d", result);
     return result;
 }
 
