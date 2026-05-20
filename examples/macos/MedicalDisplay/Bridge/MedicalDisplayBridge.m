@@ -1,7 +1,7 @@
 // MedicalDisplayBridge.m
 #import "MedicalDisplayBridge.h"
 
-@implementation AIEngineBridge
+@implementation MedicalDisplayBridge
 
 - (nullable instancetype)init {
     self = [super init];

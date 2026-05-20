@@ -3,7 +3,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface AIEngineBridge : NSObject
+@interface MedicalDisplayBridge : NSObject
 - (nullable instancetype)init;
 - (NSDictionary *)recognizeFromImage:(NSData *)imageData width:(int)width height:(int)height;
 @end
