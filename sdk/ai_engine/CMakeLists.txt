@@ -18,6 +18,7 @@ target_compile_features(medicaldisplay_ai PUBLIC cxx_std_17)
 
 # Dependencies
 target_link_libraries(medicaldisplay_ai PUBLIC
+    medicaldisplay_simd
     Threads::Threads
 )
 

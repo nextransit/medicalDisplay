@@ -22,12 +22,38 @@
     #define HAS_X86_SIMD 0
 #endif
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    #define HAS_ARM_NEON 1
+    void neon_brightness_contrast(const uint8_t* input, uint8_t* output,
+                                  int width, int height, float brightness, float contrast);
+    void neon_saturation(const uint8_t* input, uint8_t* output,
+                         int width, int height, float saturation);
+    void neon_rgb_to_grayscale(const uint8_t* rgb, uint8_t* gray, int width, int height);
+    void neon_gsdf_lut_apply(const uint8_t* input, uint8_t* output,
+                             int width, int height, const uint8_t* lut);
+    void neon_sobel_edge(const uint8_t* gray, uint8_t* edge,
+                         int width, int height, float threshold);
+    void neon_bloodless_enhance(const uint8_t* input, uint8_t* output,
+                                int width, int height,
+                                float suppress_level, float tissue_enhance, float edge_preserve);
+#else
+    #define HAS_ARM_NEON 0
+#endif
+
+#if HAS_ARM_NEON && defined(MEDICALDISPLAY_ENABLE_NEON_IMPL)
+    #define USE_ARM_NEON_IMPL 1
+#else
+    #define USE_ARM_NEON_IMPL 0
+#endif
+
 // ============================================================================
 // 后端检测
 // ============================================================================
 
 static SIMDBackend detect_best_backend() {
-#if HAS_X86_SIMD
+#if USE_ARM_NEON_IMPL
+    return SIMD_NEON;
+#elif HAS_X86_SIMD
     int info[4];
     __cpuid(info, 7);
     if (info[1] & (1 << 5)) {  // AVX2
@@ -187,7 +213,14 @@ int simd_adjust_saturation(const uint8_t* input,
                          int width, int height,
                          float saturation) {
     if (!input || !output || width <= 0 || height <= 0) return -1;
-    
+
+#if USE_ARM_NEON_IMPL
+    if (simd_get_backend() == SIMD_NEON) {
+        neon_saturation(input, output, width, height, saturation);
+        return 0;
+    }
+#endif
+
     scalar_saturation(input, output, width, height, saturation);
     return 0;
 }
@@ -314,7 +347,14 @@ int simd_gsdf_lut_apply(const uint8_t* input,
                        int width, int height,
                        const uint8_t* lut) {
     if (!input || !output || !lut || width <= 0 || height <= 0) return -1;
-    
+
+#if USE_ARM_NEON_IMPL
+    if (simd_get_backend() == SIMD_NEON) {
+        neon_gsdf_lut_apply(input, output, width, height, lut);
+        return 0;
+    }
+#endif
+
     size_t total = (size_t)width * height * 3;
     
     #pragma omp parallel for
@@ -330,17 +370,26 @@ int simd_edge_detection_sobel(const uint8_t* input,
                              int width, int height,
                              float threshold) {
     if (!input || !edge || width <= 0 || height <= 0) return -1;
-    
+
     std::vector<uint8_t> gray(width * height);
-    
+
+#if USE_ARM_NEON_IMPL
+    if (simd_get_backend() == SIMD_NEON) {
+        neon_rgb_to_grayscale(input, gray.data(), width, height);
+        neon_sobel_edge(gray.data(), edge, width, height, threshold);
+        return 0;
+    }
+#endif
+
     // RGB到灰度
     #pragma omp parallel for
     for (int i = 0; i < width * height; i++) {
         int idx = i * 3;
         gray[i] = (uint8_t)(0.299f * input[idx] + 0.587f * input[idx + 1] + 0.114f * input[idx + 2]);
     }
-    
-    int threshold_i = (int)(threshold);
+
+    const int threshold_i = threshold <= 1.0f ? static_cast<int>(threshold * 255.0f)
+                                               : static_cast<int>(threshold);
     
     // Sobel边缘检测
     #pragma omp parallel for
@@ -370,7 +419,15 @@ int simd_bloodless_enhance(const uint8_t* input,
                           float tissue_enhance,
                           float edge_preserve) {
     if (!input || !output || width <= 0 || height <= 0) return -1;
-    
+
+#if USE_ARM_NEON_IMPL
+    if (simd_get_backend() == SIMD_NEON) {
+        neon_bloodless_enhance(input, output, width, height,
+                               suppress_level, tissue_enhance, edge_preserve);
+        return 0;
+    }
+#endif
+
     #pragma omp parallel for
     for (int i = 0; i < width * height; i++) {
         int idx = i * 3;
@@ -401,7 +458,14 @@ int simd_rgb_to_grayscale(const uint8_t* rgb,
                          uint8_t* gray,
                          int width, int height) {
     if (!rgb || !gray || width <= 0 || height <= 0) return -1;
-    
+
+#if USE_ARM_NEON_IMPL
+    if (simd_get_backend() == SIMD_NEON) {
+        neon_rgb_to_grayscale(rgb, gray, width, height);
+        return 0;
+    }
+#endif
+
     #pragma omp parallel for
     for (int i = 0; i < width * height; i++) {
         int idx = i * 3;

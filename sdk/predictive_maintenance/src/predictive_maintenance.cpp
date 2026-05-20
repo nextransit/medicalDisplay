@@ -12,6 +12,7 @@
 #include <vector>
 #include <queue>
 #include <sstream>
+#include <ctime>
 
 // ============================================================================
 // 内部数据结构
@@ -152,7 +153,7 @@ int predictive_engine_update_metrics(PredictiveMaintenanceEngine* engine,
         return -1;
     }
     
-    // 保存历史
+    // 保存历史 (保存先前的 current_metrics 及其对应的时间戳)
     TrendDataPoint point;
     point.timestamp = engine->last_update_time;
     point.metrics = engine->current_metrics;
@@ -162,9 +163,22 @@ int predictive_engine_update_metrics(PredictiveMaintenanceEngine* engine,
     }
     engine->history.push_back(point);
     
-    // 更新当前指标
+    // 计算新的天数时间戳
+    uint64_t current_day = 0;
+    if (metrics->power_on_hours > 0) {
+        current_day = metrics->power_on_hours / 24;
+    } else {
+        current_day = static_cast<uint64_t>(std::time(nullptr) / 86400);
+    }
+    
+    // 确保时间轴严格单调递增，防止回归计算出现除以零
+    if (current_day <= engine->last_update_time) {
+        current_day = engine->last_update_time + 1;
+    }
+    
+    // 更新当前指标与时间戳
     engine->current_metrics = *metrics;
-    engine->last_update_time++;
+    engine->last_update_time = current_day;
     
     return 0;
 }
@@ -526,6 +540,11 @@ int predictive_engine_add_history(PredictiveMaintenanceEngine* engine,
                                   uint64_t timestamp) {
     if (!engine || !metrics) {
         return -1;
+    }
+    
+    // 确保 engine->last_update_time 总是保持更新为最新的时间戳，以防混合调用
+    if (timestamp > engine->last_update_time) {
+        engine->last_update_time = timestamp;
     }
     
     TrendDataPoint point;

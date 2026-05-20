@@ -57,6 +57,8 @@ private:
     std::unique_ptr<ONNXSession> session_;
     std::vector<int64_t> input_shape_;
     std::vector<int64_t> output_shape_;
+    std::string input_node_name_;
+    std::string output_node_name_;
 };
 
 }  // namespace medical_display

@@ -111,6 +111,7 @@ function(add_medicaldisplay_gtest target_name)
             ${MEDICALDISPLAY_ROOT}/sdk/surgical_video/include
             ${MEDICALDISPLAY_ROOT}/sdk/platform/linux/include
             ${MEDICALDISPLAY_ROOT}/sdk/cloud/include
+            ${MEDICALDISPLAY_ROOT}/sdk/performance/include
             ${MEDICALDISPLAY_ROOT}/sdk/predictive_maintenance/include
             ${MEDICALDISPLAY_ROOT}/sdk/federated/include
             ${MEDICALDISPLAY_ROOT}/sdk/multimodal/include
@@ -152,6 +153,10 @@ add_medicaldisplay_gtest(test_dicom_security
     test_dicom_security.cpp
 )
 
+add_medicaldisplay_gtest(test_dicom_fuzz
+    test_dicom_fuzz.cpp
+)
+
 # ========================================================================
 # v2.0 新增模块单元测试
 # ========================================================================
@@ -179,6 +184,11 @@ add_medicaldisplay_gtest(test_ar_overlay
 add_medicaldisplay_gtest(test_digital_twin
     test_digital_twin.cpp
 )
+
+add_medicaldisplay_gtest(test_performance
+    test_performance.cpp
+)
+target_link_libraries(test_performance PRIVATE medicaldisplay_performance)
 
 
 # ========================================================================

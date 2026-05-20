@@ -212,14 +212,13 @@ float gsdf_measure_jnd_accuracy(float luminance, float reference_jnd,
 
 float gsdf_calculate_delta_jnd(const float *lut, int lut_size) {
     if (!lut || lut_size < 2) return 0.0f;
-    float prev_jnd  = gsdf_calculate_pvalue(0.0f, 0.0f);
+
+    float prev_jnd  = GSDF_JND_MIN + lut[0] * (GSDF_JND_MAX - GSDF_JND_MIN);
     float max_delta = 0.0f;
 
     for (int i = 1; i < lut_size; ++i) {
-        float pvalue    = lut[i];
-        float luminance = gsdf_pvalue_to_luminance(pvalue, 0.0f);
-        float jnd       = gsdf_luminance_to_jnd_fast(luminance);
-        float delta     = jnd - prev_jnd;
+        float jnd   = GSDF_JND_MIN + lut[i] * (GSDF_JND_MAX - GSDF_JND_MIN);
+        float delta = jnd - prev_jnd;
         if (delta > max_delta) max_delta = delta;
         prev_jnd = jnd;
     }

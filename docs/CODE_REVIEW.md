@@ -368,3 +368,319 @@ DICOM 渲染每帧分配/拷贝一个 width*height 字节的 vector。4K 单色 
 > 本审查报告由 Claude Code review 工具生成。
 > 报告日期：2026-05-16
 > 修订记录：v1.0 初始版本
+
+---
+
+## 复审补充（2026-05-19）— 功能拓展与性能提升专项
+
+> 本轮只做二次 review，不修改业务代码。重点核对“新增模块 / 文档宣称 / 主构建链路 / 性能基础设施”是否真实闭环。
+
+### 本轮结论
+
+- 代码库已经从“核心 SDK 脚手架”扩展到“多模块并行拓展”阶段，覆盖了 `ambient_light`、`multiscreen`、`digital_twin`、`predictive_maintenance`、`federated`、`surgical_video` 等方向。
+- 但当前主要问题不再只是“有没有模块”，而是 **主链路是否真的接通**、**文档宣称是否与代码一致**、以及 **性能基础设施本身是否安全可用**。
+- 新增模块整体呈现“广度先行、深度不足”的特征：接口和测试外壳有了，但不少核心路径仍是模拟值、内存态或占位实现。
+
+---
+
+## 🔴 本轮新增关键问题
+
+### 1. `FrameBufferPool` 存在真实内存布局错误，写满一帧会覆盖下一块头部 ✅ 已修复
+
+`sdk/performance/src/memory_pool.cpp`
+
+- `frame_pool_create()` 把每帧步长计算为 `aligned_size = align64(frame_size)`，但**没有把 `sizeof(FrameBlock)` 算进去**。
+- 随后用 `reinterpret_cast<FrameBlock*>(pool->memory + i * aligned_size)` 布置块头，再把 `block->data` 作为可写帧缓冲返回。
+- 结果是：每块真正可用的数据空间小于 `frame_size`；一旦调用方按 `frame_size` 写满，会覆盖下一块的 `next/in_use` 头部。
+- 这是 **性能模块里的正确性 bug**，优先级高于任何 SIMD 调优；否则缓冲池越快，越快把内存打坏。
+
+**建议**：
+- 每块总大小应为 `align64(sizeof(FrameBlock) + frame_size)`。
+- `frame_pool_release()` 应基于 `offsetof(FrameBlock, data)` 反推块头，而不是假定 `sizeof(FrameBlock)` 恰好等于数据偏移。
+- 为 `frame_pool_acquire/release` 增加“整帧写入 + 多次回收”的破坏性测试。
+
+### 2. `MemoryPool` 扩容后自由链表悬空，存在 UAF / 随机崩溃风险 ✅ 已修复
+
+`sdk/performance/src/memory_pool.cpp`
+
+- `mem_pool_alloc()` 在池耗尽时会重新 `aligned_alloc()` 更大内存，然后 `memcpy(new_mem, old_mem, old_size)` 并 `free(old_mem)`。
+- 但块头里的 `next` 指针、以及 `pool->free_list` 自身，仍然都指向**旧内存地址**。
+- 这意味着扩容一旦发生，后续 `alloc/free` 会沿着悬空链表走，属于典型 use-after-free。
+- 这不是“性能不够好”，而是**内存池在真实压力下不可安全使用**。
+
+**建议**：
+- 不要用 `memcpy` 迁移带内部指针的 free-list 结构。
+- 扩容时应改为“分段 arena + 多链表”或“重新遍历新 arena 构建 free-list”。
+- 在压测下加 AddressSanitizer / guard page 验证。
+
+### 3. DICOM 压缩 / 多帧能力在 SDK 主 API 中仍未真正闭环 ⚠️ 部分修复
+
+`sdk/dicom/src/dicom_reader.cpp`
+
+- `decode_jpeg_baseline()` 仍是 placeholder，直接返回 0。
+- `dicom_read_pixels()` 的固定占位输出已经移除；当前可读取未压缩 `Pixel Data` 到主 SDK API。
+- `dicom_get_frame_count()` 的写死返回 `1` 已修复；当前可读取未压缩多帧计数和按帧偏移。
+- `RLE Lossless` 已补入最小主链路，当前有 SDK 主 API 回归测试覆盖。
+- 这意味着即使某些 example 或上层 GUI 已开始处理压缩格式，**SDK 对外主 API 仍不能证明已具备 JPEG / 多帧 / cine 支持**。
+
+**建议**：
+- 把“文件解析成功”和“像素数据真实可读”分开建测试，不要只验证 metadata 路径。
+- 优先打通 `Explicit VR Little Endian + 未压缩多帧`，再上 JPEG Baseline / JPEG2000。
+- `tests/test_dicom_fuzz.cpp` 建议扩充到“压缩帧 + NumberOfFrames + 截断片段”场景。
+
+### 4. `surgical_video` 的 GPU 构建脚本与仓库真实文件不一致 ✅ 已修复
+
+`sdk/surgical_video/CMakeLists.txt`
+
+- CMake 在 Vulkan 路径下引用 `src/gpu_pipeline_vulkan.cpp`，OpenGL 路径下引用 `src/gpu_pipeline_opengl.cpp`。
+- 但当前目录真实存在的是 `vulkan_compute.cpp`，并**没有** `gpu_pipeline_opengl.cpp`。
+- 这意味着一旦打开对应构建开关，`surgical_video` 模块会直接在 configure/build 阶段失效。
+
+**本轮实施结果**：
+- Vulkan 源文件映射已对齐到真实存在的 `src/vulkan_compute.cpp`。
+- 默认构建继续保持 CPU fallback，避免未完成 GPU 后端污染主构建。
+
+### 4.1 本轮实施摘要
+
+- `sdk/performance/src/memory_pool.cpp`
+  - 修复 `FrameBufferPool` 块布局
+  - 修复 `MemoryPool` 扩容后的悬空 free-list
+  - 引入 arena 模式扩容，避免 `memcpy + free(old_mem)` 破坏内部指针
+- `sdk/dicom/src/dicom_reader.cpp`
+  - 打通未压缩 `Pixel Data` 读取
+  - 修复 `dicom_get_frame_count()`
+  - 修复 `dicom_read_frame()` 按帧偏移
+  - 修正 implicit VR 下的长度/数值解析
+  - 新增最小 `RLE Lossless` 主 API 解码闭环
+- `sdk/surgical_video/CMakeLists.txt`
+  - 修正 Vulkan 源文件接线
+- `sdk/performance/CMakeLists.txt`
+  - 补 `OpenMP` 链接探测（若环境可用则接入）
+- `sdk/performance/src/simd_processing.cpp`
+  - 修正 Sobel 阈值语义，兼容 `0..1` 与 `0..255`
+  - 将未真正接通的 NEON 实现从默认 dispatch 中移除，避免“假可用”
+- `tests/test_performance.cpp`
+  - 新增内存池扩容与整帧写入回归测试
+- `tests/test_suite.cpp`
+  - 新增 DICOM 多帧主链路测试
+- `examples/linux/medical_display_demo.cpp` / `examples/linux/cloud_demo.cpp`
+  - 已把 AI backend 状态落到示例输出与本地 telemetry 文件
+- `tests/test_dicom_fuzz.cpp`
+  - 已纳入构建验证
+
+**建议**：
+- 先统一文件命名与 CMake target source。
+- 未完成的 GPU 后端不要挂在默认开关上；否则“可选功能”会污染主构建稳定性。
+
+---
+
+## ⚠️ 本轮新增高优先级问题
+
+### 5. ONNX 已接入接口，但默认构建并不能证明“真实 AI 已启用” ⚠️ 部分修复
+
+`sdk/ai_engine/src/modality_strategy.h`  
+`sdk/ai_engine/src/onnx_backend.cpp`
+
+- `ModalityClassifier` 只有在 `config.model_path[0] != '\0'` 时才尝试创建 ONNX backend。
+- 仓库当前并没有默认随构建提供的模型文件，也没有启动期强校验“模型缺失即降级告警”。
+- 因此当前状态更准确的描述应是：**“支持 ONNX 接口 + 默认仍可能走规则 fallback”**，而不是“AI 模态识别已产品化完成”。
+
+**建议**：
+- 启动时明确区分 `ONNX_ACTIVE / FALLBACK_ACTIVE / MODEL_MISSING / BACKEND_INIT_FAILED`。
+- 把“是否启用真实模型”暴露到 `ai_engine_get_stats()` 或诊断日志。
+
+**本轮实施结果**：
+- 已新增 `ai_engine_get_backend_status()`
+- 已新增 `ai_engine_backend_status_name()`
+- 当前可区分 `FALLBACK_RULES / ONNX_ACTIVE / MODEL_CONFIGURED_BUT_FAILED / UNAVAILABLE`
+- 尚未接入 GUI、日志和云端遥测
+
+### 6. ONNX 推理路径仍有不必要的每次拷贝和临时分配
+
+`sdk/ai_engine/src/onnx_backend.cpp`  
+`sdk/ai_engine/src/ai_engine_impl.cpp`
+
+- `ONNXBackend::Run()` 每次都 `std::vector<float> input_data(input, input + input_size)` 复制输入。
+- `ModalityClassifier::Run()` 每次都分配 `std::vector<float> output(score_count)`。
+- `preprocess_dicom()` / `preprocess_image()` 单帧路径仍然 `new float[]`，虽然文件顶部已经定义了 thread-local buffer，但主要单帧 API 并没有用起来。
+
+**建议**：
+- 让 `AIEngine` 在创建时按模型输入尺寸预分配输入/输出 tensor buffer。
+- `thread_local` 预处理缓冲只在 batch 内部使用还不够，单帧主路径也应切过去。
+- 如果 ONNX Runtime 允许，直接把预处理结果写入 runtime tensor backing buffer，减少一次 copy。
+
+### 7. SIMD / OpenMP 能力的文档宣称明显超前于真实构建链
+
+`sdk/performance/src/simd_processing.cpp`  
+`sdk/performance/CMakeLists.txt`  
+`CMakeLists.txt`
+
+- 代码里大量使用了 `#pragma omp parallel for`，但根工程和 `sdk/performance` **都没有** `find_package(OpenMP)` 或显式链接 `OpenMP::OpenMP_CXX`。
+- 在很多 Clang / AppleClang 环境下，这些 pragma 会被直接忽略，性能数字不可复现。
+- 当前真正写了 x86 intrinsic 的只有亮度/对比度那一路；饱和度、灰度、Sobel、血色抑制、模糊、pipeline 大多仍是标量循环。
+- `SIMD_NEON` 枚举和文档都存在，但 `detect_best_backend()` 只检测 x86，**不会真正返回 NEON**。
+
+**建议**：
+- 先把“构建期开启了什么加速”变成可验证事实，再谈 benchmark。
+- 文档应改成“局部 SIMD + 条件 OpenMP 并行”，而不是笼统写“SIMD/NEON/OpenMP 已完成”。
+- ARM 平台应补真实 NEON dispatch；否则 `SIMD_NEON` 只是 API 占位。
+
+### 8. `simd_edge_detection_sobel()` 的阈值语义与其它模块不一致
+
+`sdk/performance/src/simd_processing.cpp`
+
+- 函数里把 `threshold` 直接转成 `int threshold_i = (int)(threshold)`。
+- 但同仓库别处（如 `surgical_video.cpp`）边缘阈值又按 `threshold * 255.0f` 使用。
+- 如果上层按 `0.1f`、`0.2f` 这种归一化阈值传入，这里会截成 0，结果几乎所有边缘都变成强边。
+
+**建议**：
+- 统一阈值约定：要么全仓库都是 `0..1`，要么都是 `0..255`。
+- API 文档、默认值、实现必须同步，否则同名“edge_threshold”跨模块行为会漂移。
+
+### 9. 新增业务模块多数仍是“模拟值 / 内存态”，适合作为原型，不适合作为完成态对外宣称
+
+重点示例：
+
+- `sdk/ambient_light/src/ambient_light_sensor.cpp`
+  - 即使选择 `VEML7700 / BH1750 / OPT3001` 等真实传感器类型，当前也只是返回模拟 lux。
+- `sdk/multiscreen/src/multi_display_hub.cpp`
+  - 扫描显示器时直接构造两台硬编码显示器和 EDID hash。
+- `sdk/digital_twin/src/digital_twin.cpp`
+  - 数据全部驻留内存，没有持久化层，也没有与 cloud/telemetry 做真实联动。
+
+这些实现方向是合理的，但在 review 结论里应归类为：
+- **已形成可演化接口**
+- **尚未接入真实平台适配器**
+
+而不是简单记为“DONE”。
+
+### 10. `predictive_maintenance` 的时间轴是伪时间，不适合做寿命预测基线
+
+`sdk/predictive_maintenance/src/predictive_maintenance.cpp`
+
+- `last_update_time` 不是使用 `metrics->timestamp`，而是每次 `update_metrics()` 只做 `++`。
+- 线性回归斜率由这个自增计数驱动，而不是真实时间间隔。
+- 一旦上报周期不均匀、补历史数据、或离线重放，预测斜率都会偏掉。
+
+**建议**：
+- 统一用遥测真实时间戳做回归横轴。
+- 明确区分“样本索引趋势”和“真实时间趋势”，不要混用。
+
+### 11. 文档之间已经出现明显漂移，影响后续 review 与交付可信度
+
+当前存在两类反向漂移：
+
+- `docs/PERFORMANCE.md` 对 SIMD / OpenMP / NEON / GPU 的表述明显偏乐观。
+- `docs/IMPLEMENTATION_STATUS.md` 又仍把不少已经加入 root CMake 的模块标成 `TODO`。
+
+这会让后续所有工作陷入两个问题：
+- 用户不知道“已实现”到底指接口存在、测试桩存在，还是可真实交付；
+- review 难以判断某项是 regression，还是文档本身已经失真。
+
+**建议**：
+- 把状态统一拆成三层：`API_READY / SIMULATED / PLATFORM_READY`。
+- 文档中的性能数字统一附带：编译器、是否启用 OpenMP、是否启用真实 SIMD backend、输入格式、是否 warmup。
+
+---
+
+## 🎯 本轮功能拓展建议
+
+结合现状，下一阶段更适合走“把已有扩展模块接到真实主链路”，而不是继续横向加目录：
+
+1. **DICOM Cine / 压缩链路产品化**
+   - 先做未压缩多帧
+   - 再做 RLE / JPEG Baseline
+   - 最后补 JPEG2000 / JPEG-LS
+
+2. **环境光 → 显示引擎闭环**
+   - `ambient_light` 不应停在独立模块
+   - 应直接驱动 `display_engine` 的亮度、GSDF、白点策略切换
+
+3. **多屏协同从模拟扫描切到真实枚举**
+   - Linux: DRM / Wayland
+   - macOS: CoreGraphics / IOKit / NSScreen
+   - 把硬编码 EDID/hash 替换成真实硬件信息
+
+4. **数字孪生 / 预测性维护 / 云端联动**
+   - `cloud telemetry -> digital_twin -> predictive_maintenance -> alert/audit`
+   - 目前这些模块是并列存在，还没有形成诊断闭环
+
+5. **AI 模型状态可观测化**
+   - 当前最缺的是“到底有没有走真实 ONNX”
+   - 建议在 demo/UI/telemetry 里明确展示 backend、model version、fallback 状态
+
+6. **macOS GUI 与 SDK 核心能力对齐**
+   - 当前 GUI 路径已经推进较快
+   - 建议把 GUI 使用的 DICOM 读取、压缩判断、frame 处理能力尽量回收到 `sdk/dicom`，避免出现“双实现分叉”
+
+---
+
+## ⚡ 本轮性能提升建议
+
+按“先修 correctness，再做提速”的顺序建议如下：
+
+### P0：先修性能基础设施 bug
+
+1. 修复 `FrameBufferPool` 块布局错误
+2. 修复 `MemoryPool` 扩容后悬空链表
+3. 把 `simd_pipeline_process()` 每次分配 `temp1/temp2` 改为复用缓冲
+
+### P1：减少推理与图像处理路径的重复分配
+
+1. `AIEngine` 级预分配输入/输出 tensor
+2. 单帧预处理复用 `thread_local` buffer
+3. DICOM 渲染 scratch buffer 常驻化
+4. `surgical_video` 使用 `FrameBufferPool` 前先修正池实现
+
+### P1：把“伪 SIMD”收敛成“可验证 SIMD”
+
+1. 显式接入 `OpenMP`
+2. 把 backend 检测补齐到 ARM/NEON
+3. 把最热路径优先改成真正的向量化实现：
+   - GSDF LUT apply
+   - RGB/YUV 转换
+   - Sobel
+   - 血色抑制
+
+### P2：做可复现 benchmark，而不是静态文档数字
+
+1. benchmark 启动打印：
+   - backend
+   - compiler
+   - OpenMP on/off
+   - SIMD on/off
+   - image format
+2. 区分：
+   - cold run
+   - warm run
+   - 单线程
+   - 多线程
+3. 输出 p50 / p95 / max，而不是只给均值 fps
+
+---
+
+## 🧭 建议更新后的优先级
+
+| Pri | 行动 | 说明 |
+|---|---|---|
+| P0 | 修复 `FrameBufferPool` / `MemoryPool` | 这是 correctness 问题，不只是性能问题 |
+| P0 | 打通 DICOM 真正像素读取与多帧 | 当前 SDK 主 API 仍无法支撑 cine / 压缩交付 |
+| P1 | 修正 `surgical_video` GPU 构建接线 | 避免可选功能破坏主构建 |
+| P1 | 让 ONNX backend 状态可观测 | 明确哪些场景仍在 fallback |
+| P1 | 显式接入 OpenMP / NEON / real SIMD dispatch | 让性能报告可复现 |
+| P2 | 打通 ambient/multiscreen/digital twin 闭环 | 从模块并列走向真实系统协同 |
+| P2 | 清理文档漂移 | 降低后续 review 成本 |
+
+---
+
+## 本轮复审结论
+
+**状态：DONE_WITH_CONCERNS**
+
+如果把 2026-05-16 的报告定义为“核心 SDK 风险 review”，那么本轮 2026-05-19 的结论是：
+
+- **广度已经上来**：模块数量、目录结构、测试外壳、文档铺设都比第一轮丰富得多；
+- **深度仍需收敛**：新增能力里，真实可交付的主链路、真实平台适配、以及性能基础设施的 correctness 还没有完全跟上；
+- **下一阶段最重要的不是继续加模块，而是把已有扩展能力收敛成可验证、可构建、可解释、可 benchmark 的系统。**
+
+> 修订记录：v1.1（2026-05-19 复审补充，聚焦功能拓展与性能提升）

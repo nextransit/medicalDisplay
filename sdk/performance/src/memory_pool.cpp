@@ -9,7 +9,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <cstddef>
 #include <mutex>
+#include <new>
 #include <vector>
 
 // ============================================================================
@@ -22,10 +24,15 @@ struct MemBlock {
     size_t size;
 };
 
+struct MemoryArena {
+    char* memory;
+    size_t total_size;
+    size_t num_blocks;
+};
+
 struct MemoryPool {
     MemoryPoolConfig config;
-    size_t block_size;
-    char* memory;
+    size_t block_stride;
     size_t total_size;
     size_t num_blocks;
     
@@ -36,9 +43,54 @@ struct MemoryPool {
     std::atomic<uint64_t> total_freed;
     
     std::mutex mutex;
+    std::vector<MemoryArena> arenas;
     
-    MemoryPool() : memory(nullptr), free_list(nullptr) {}
+    MemoryPool() : block_stride(0), total_size(0), num_blocks(0), free_list(nullptr) {}
 };
+
+static constexpr size_t kPoolAlignment = 64;
+
+static size_t align_up(size_t value, size_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+static char* allocate_aligned_bytes(size_t size) {
+    void* ptr = nullptr;
+    const size_t aligned_size = align_up(size, kPoolAlignment);
+    if (posix_memalign(&ptr, kPoolAlignment, aligned_size) != 0) {
+        return nullptr;
+    }
+    return static_cast<char*>(ptr);
+}
+
+static bool add_arena(MemoryPool* pool, size_t block_count) {
+    if (!pool || block_count == 0) {
+        return false;
+    }
+
+    const size_t arena_size = pool->block_stride * block_count;
+    char* memory = allocate_aligned_bytes(arena_size);
+    if (!memory) {
+        return false;
+    }
+
+    MemoryArena arena{memory, arena_size, block_count};
+    pool->arenas.push_back(arena);
+    pool->total_size += arena_size;
+
+    for (size_t index = 0; index < block_count; ++index) {
+        char* block_mem = memory + index * pool->block_stride;
+        auto* block = reinterpret_cast<MemBlock*>(block_mem);
+        block->next = pool->free_list;
+        block->in_use = false;
+        block->size = pool->config.block_size;
+        pool->free_list = block;
+    }
+
+    pool->num_blocks += block_count;
+    pool->free_blocks += block_count;
+    return true;
+}
 
 // ============================================================================
 // 生命周期
@@ -47,45 +99,31 @@ struct MemoryPool {
 extern "C" {
 
 MemoryPool* mem_pool_create(const MemoryPoolConfig* config) {
-    if (!config || config->block_size == 0) return nullptr;
+    if (!config || config->block_size == 0 || config->initial_blocks == 0) return nullptr;
     
     auto* pool = new (std::nothrow) MemoryPool();
     if (!pool) return nullptr;
     
     pool->config = *config;
-    pool->block_size = config->block_size + sizeof(MemBlock);
-    pool->num_blocks = config->initial_blocks;
-    pool->total_size = pool->block_size * pool->num_blocks;
-    
-    // 分配内存
-    pool->memory = (char*)std::aligned_alloc(64, pool->total_size);
-    if (!pool->memory) {
+    pool->block_stride = align_up(sizeof(MemBlock) + config->block_size, kPoolAlignment);
+    pool->allocated_blocks = 0;
+    pool->free_blocks = 0;
+    pool->total_allocated = 0;
+    pool->total_freed = 0;
+
+    if (!add_arena(pool, config->initial_blocks)) {
         delete pool;
         return nullptr;
     }
-    
-    // 初始化内存块链表
-    pool->free_list = nullptr;
-    for (size_t i = 0; i < pool->num_blocks; i++) {
-        char* block_mem = pool->memory + i * pool->block_size;
-        auto* block = reinterpret_cast<MemBlock*>(block_mem);
-        block->next = pool->free_list;
-        block->in_use = false;
-        block->size = config->block_size;
-        pool->free_list = block;
-    }
-    
-    pool->allocated_blocks = 0;
-    pool->free_blocks = pool->num_blocks;
-    pool->total_allocated = 0;
-    pool->total_freed = 0;
     
     return pool;
 }
 
 void mem_pool_destroy(MemoryPool* pool) {
     if (pool) {
-        std::free(pool->memory);
+        for (const auto& arena : pool->arenas) {
+            std::free(arena.memory);
+        }
         delete pool;
     }
 }
@@ -96,12 +134,15 @@ void mem_pool_reset(MemoryPool* pool) {
     std::lock_guard<std::mutex> lock(pool->mutex);
     
     pool->free_list = nullptr;
-    for (size_t i = 0; i < pool->num_blocks; i++) {
-        char* block_mem = pool->memory + i * pool->block_size;
-        auto* block = reinterpret_cast<MemBlock*>(block_mem);
-        block->next = pool->free_list;
-        block->in_use = false;
-        pool->free_list = block;
+    for (const auto& arena : pool->arenas) {
+        for (size_t index = 0; index < arena.num_blocks; ++index) {
+            char* block_mem = arena.memory + index * pool->block_stride;
+            auto* block = reinterpret_cast<MemBlock*>(block_mem);
+            block->next = pool->free_list;
+            block->in_use = false;
+            block->size = pool->config.block_size;
+            pool->free_list = block;
+        }
     }
     
     pool->free_blocks = pool->num_blocks;
@@ -117,13 +158,13 @@ void* mem_pool_alloc(MemoryPool* pool, size_t size) {
     
     // 如果请求大小超过块大小，直接malloc
     if (size > pool->config.block_size) {
-        void* ptr = std::aligned_alloc(64, size + sizeof(MemBlock));
+        char* ptr = allocate_aligned_bytes(sizeof(MemBlock) + size);
         if (!ptr) return nullptr;
         
         auto* block = reinterpret_cast<MemBlock*>(ptr);
         block->in_use = true;
         block->size = size;
-        block->next = nullptr;  // 标记为直接分配
+        block->next = nullptr;
         
         pool->total_allocated++;
         return block + 1;
@@ -136,34 +177,14 @@ void* mem_pool_alloc(MemoryPool* pool, size_t size) {
         // 尝试扩展 (如果允许)
         if (pool->config.max_blocks == 0 || 
             pool->num_blocks < pool->config.max_blocks) {
-            // 简单扩展: 翻倍
-            size_t new_blocks = pool->num_blocks * 2;
-            if (pool->config.max_blocks > 0 && new_blocks > pool->config.max_blocks) {
-                new_blocks = pool->config.max_blocks;
-            }
-            
-            size_t new_size = pool->block_size * new_blocks;
-            char* new_mem = (char*)std::aligned_alloc(64, new_size);
-            if (new_mem) {
-                // 复制原有数据
-                std::memcpy(new_mem, pool->memory, pool->total_size);
-                std::free(pool->memory);
-                pool->memory = new_mem;
-                
-                // 初始化新块
-                for (size_t i = pool->num_blocks; i < new_blocks; i++) {
-                    char* block_mem = pool->memory + i * pool->block_size;
-                    auto* block = reinterpret_cast<MemBlock*>(block_mem);
-                    block->next = pool->free_list;
-                    block->in_use = false;
-                    block->size = pool->config.block_size;
-                    pool->free_list = block;
-                    pool->free_blocks++;
+            size_t grow_blocks = pool->num_blocks > 0 ? pool->num_blocks : pool->config.initial_blocks;
+            if (pool->config.max_blocks > 0) {
+                const size_t remaining = pool->config.max_blocks - pool->num_blocks;
+                if (grow_blocks > remaining) {
+                    grow_blocks = remaining;
                 }
-                
-                pool->num_blocks = new_blocks;
-                pool->total_size = new_size;
             }
+            add_arena(pool, grow_blocks);
         }
     }
     
@@ -188,8 +209,7 @@ void mem_pool_free(MemoryPool* pool, void* ptr) {
     
     auto* block = reinterpret_cast<MemBlock*>(ptr) - 1;
     
-    // 检查是否是直接分配 (next==nullptr)
-    if (block->next == nullptr && block->size > pool->config.block_size) {
+    if (block->size > pool->config.block_size) {
         std::free(block);
         pool->total_freed++;
         return;
@@ -223,8 +243,8 @@ void mem_pool_get_stats(MemoryPool* pool,
     if (total_freed) *total_freed = pool->total_freed.load();
     
     if (wasted_bytes) {
-        size_t used = pool->allocated_blocks.load() * pool->block_size;
-        size_t total_alloc = pool->num_blocks * pool->block_size;
+        size_t used = pool->allocated_blocks.load() * pool->block_stride;
+        size_t total_alloc = pool->num_blocks * pool->block_stride;
         *wasted_bytes = total_alloc - used;
     }
 }
@@ -241,6 +261,7 @@ struct FrameBlock {
 
 struct FrameBufferPool {
     size_t frame_size;
+    size_t block_stride;
     size_t total_frames;
     std::atomic<size_t> available_frames;
     
@@ -258,14 +279,13 @@ FrameBufferPool* frame_pool_create(size_t frame_size, size_t frame_count) {
     if (!pool) return nullptr;
     
     pool->frame_size = frame_size;
+    pool->block_stride = align_up(offsetof(FrameBlock, data) + frame_size, kPoolAlignment);
     pool->total_frames = frame_count;
     pool->available_frames = frame_count;
     
-    // 对齐帧大小到64字节
-    size_t aligned_size = (frame_size + 63) & ~63;
-    size_t total_size = aligned_size * frame_count;
+    const size_t total_size = pool->block_stride * frame_count;
     
-    pool->memory = (char*)std::aligned_alloc(64, total_size);
+    pool->memory = allocate_aligned_bytes(total_size);
     if (!pool->memory) {
         delete pool;
         return nullptr;
@@ -274,7 +294,7 @@ FrameBufferPool* frame_pool_create(size_t frame_size, size_t frame_count) {
     // 初始化空闲列表
     pool->free_list = nullptr;
     for (size_t i = 0; i < frame_count; i++) {
-        auto* block = reinterpret_cast<FrameBlock*>(pool->memory + i * aligned_size);
+        auto* block = reinterpret_cast<FrameBlock*>(pool->memory + i * pool->block_stride);
         block->next = pool->free_list;
         block->in_use = false;
         pool->free_list = block;
@@ -311,7 +331,7 @@ void frame_pool_release(FrameBufferPool* pool, void* frame) {
     std::lock_guard<std::mutex> lock(pool->mutex);
     
     auto* block = reinterpret_cast<FrameBlock*>(
-        reinterpret_cast<char*>(frame) - sizeof(FrameBlock)
+        reinterpret_cast<char*>(frame) - offsetof(FrameBlock, data)
     );
     
     block->next = pool->free_list;

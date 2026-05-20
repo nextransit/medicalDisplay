@@ -12,8 +12,8 @@
 
 namespace medical_display {
 
-float* preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h);
-float* preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h);
+void preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h, float* output);
+void preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h, float* output);
 void normalize_tensor(float* data, int size, float mean, float std);
 uint64_t hash_metadata_key(const char* modality, const char* series, int body_part);
 

@@ -1,262 +1,330 @@
 /**
- * AI Medical Display - 修复版
+ * AI Medical Display - macOS GUI (Responsive Layout + Fixed Rendering)
  */
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
-#import <stdio.h>
+#import <simd/simd.h>
 
 static const char* shader = R"(
 #include <metal_stdlib>
 using namespace metal;
 
-struct Params {
-    uint w;
-    uint h;
-    float br;
-    float co;
-    float sa;
-    int gsdf;
-    int blood;
-    float bs;
-    float te;
-    int mode;
-};
-
-float3 rgb2hsv(float3 c) {
-    float4 K = float4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
-    float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
-    float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
-    float d = q.x - min(q.w, q.y);
-    return float3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
-}
-
-float3 hsv2rgb(float3 c) {
-    float4 K = float4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
 kernel void gen(texture2d<float, access::write> o [[texture(0)]],
-                constant Params& p [[buffer(0)]],
+                constant float4& p [[buffer(0)]],
                 uint2 g [[thread_position_in_grid]]) {
-    if (g.x >= p.w || g.y >= p.h) return;
+    uint w = uint(p.x);
+    uint h = uint(p.y);
+    if (g.x >= w || g.y >= h) return;
     
-    float x = (float)g.x / (float)p.w;
-    float y = (float)g.y / (float)p.h;
-    float d = sqrt(pow(x - 0.5, 2.0) + pow(y - 0.5, 2.0));
+    float x = (float)g.x / (float)w;
+    float y = (float)g.y / (float)h;
+    float d = sqrt((x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5));
+    float mode = p.z;
+    float gsdf = p.w;
     
     float3 rgb;
     
-    if (p.mode == 0) {
-        rgb = float3(clamp(1.0 - d * 2.0, 0.0, 1.0) * 0.8 + 0.1);
-    } else if (p.mode == 1) {
+    if (mode < 0.5) {
+        float c = clamp(1.0 - d * 2.5, 0.0, 1.0);
+        rgb = float3(c * 0.9 + 0.1);
+        float ring = sin(d * 30.0) * 0.1;
+        rgb += float3(ring);
+    } else if (mode < 1.5) {
         float a = atan2(y - 0.5, x - 0.5);
-        rgb = float3(sin(a * 6.0 + d * 15.0) * 0.3 + 0.5);
-    } else if (p.mode == 2) {
-        rgb = (d < 0.2) ? float3(0.85) : (d < 0.4) ? float3(0.3 + d * 2.5) : float3(0.05);
+        float wave = sin(a * 8.0 + d * 20.0) * 0.3 + 0.5;
+        rgb = float3(wave * 0.3, wave * 0.5, wave * 0.9);
+    } else if (mode < 2.5) {
+        float val = (d < 0.15) ? 0.95 : (d < 0.35) ? 0.6 - d : 0.08;
+        rgb = float3(val);
     } else {
-        float h = clamp(1.0 - d * 3.0, 0.0, 1.0);
-        rgb = float3(h, h > 0.5 ? (h - 0.5) * 2.0 : 0.0, 0.0);
+        float angle = atan2(y - 0.5, x - 0.3);
+        float depth = d * 2.5;
+        float echo = sin(angle * 12.0 - depth * 8.0) * 0.4 + 0.6;
+        echo *= clamp(1.0 - depth * 0.5, 0.2, 1.0);
+        rgb = float3(echo, echo * 0.95, echo * 0.9);
     }
     
-    if (p.br != 0.0 || p.co != 1.0) {
-        rgb = (rgb - 0.5) * p.co + 0.5 + p.br;
-        rgb = clamp(rgb, 0.0, 1.0);
-    }
-    
-    if (p.sa != 1.0) {
-        float3 h = rgb2hsv(rgb);
-        h.y *= p.sa;
-        rgb = hsv2rgb(h);
-    }
-    
-    if (p.gsdf) {
+    if (gsdf > 0.5) {
         float gray = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
-        float gsdf_val = pow(10.0, -0.6225 + 0.082 * log(gray * 8.5 + 1e-10) / log(10.0)) / 40.0;
-        rgb *= (gsdf_val / max(gray, 0.001));
-        rgb = clamp(rgb, 0.0, 1.0);
+        if (gray > 0.01) {
+            float gv = pow(10.0, -0.6225 + 0.082 * log(gray * 8.5) / 2.302585) / 40.0;
+            rgb *= (gv / gray);
+            rgb = clamp(rgb, 0.0, 1.0);
+        }
     }
     
     o.write(float4(rgb, 1.0), g);
 }
 )";
 
-static const char* modalityNames[] = {"CT", "MRI", "XRay", "超声"};
-
-@interface MetalView:NSView
-+(Class)layerClass;
+@interface MetalView : NSView {
+    CAMetalLayer *_metalLayer;
+}
+@property (nonatomic, assign) int mode;
+@property (nonatomic, assign) int gsdf;
 @end
+
 @implementation MetalView
-+(Class)layerClass{return [CAMetalLayer class];}
-@end
 
-typedef struct { uint w,h; float br,co,sa; int gsdf,blood; float bs,te; int mode; } Params;
-
-@interface AppDelegate:NSObject<NSApplicationDelegate>
-@end
-@implementation AppDelegate{
-  id<MTLDevice>gDev;
-  id<MTLCommandQueue>gQueue;
-  id<MTLComputePipelineState>gPipeline;
-  CAMetalLayer* gLayer;
-  int gW,gH;
-}
-static float gBright=0,gContrast=1,gSat=1,gBlood=.5;
-static int gMode=0,gGSDF=1;
-
--(void)render:(NSTimer*)t{
-  if(!gPipeline)return;
-  id<CAMetalDrawable> d=[gLayer nextDrawable];
-  if(!d)return;
-  Params p={(uint)gW,(uint)gH,gBright,gContrast,gSat,gGSDF,0,gBlood,.3,gMode};
-  id<MTLCommandBuffer> cmd=[gQueue commandBuffer];
-  id<MTLComputeCommandEncoder> enc=[cmd computeCommandEncoder];
-  [enc setComputePipelineState:gPipeline];
-  [enc setTexture:d.texture atIndex:0];
-  [enc setBytes:&p length:sizeof(p) atIndex:0];
-  [enc dispatchThreadgroups:MTLSizeMake((gW+15)/16,(gH+15)/16,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
-  [enc endEncoding];
-  [cmd presentDrawable:d];
-  [cmd commit];
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        _mode = 0;
+        _gsdf = 1;
+        
+        [self setWantsLayer:YES];
+        
+        _metalLayer = [[CAMetalLayer alloc] init];
+        _metalLayer.frame = self.bounds;
+        _metalLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        self.layer = _metalLayer;
+    }
+    return self;
 }
 
--(void)applicationDidFinishLaunching:(NSNotification*)n{
-  printf("AI Medical Display\n");fflush(stdout);
-  gDev=MTLCreateSystemDefaultDevice();
-  printf("Metal: %s\n",[[gDev name]UTF8String]);fflush(stdout);
-  NSError* e=nil;
-  id<MTLLibrary> lib=[gDev newLibraryWithSource:@(shader) options:nil error:&e];
-  if(e){printf("Shader error: %s\n",[[e localizedDescription]UTF8String]);return;}
-  gPipeline=[gDev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"gen"] error:&e];
-  if(e){printf("Pipeline error: %s\n",[[e localizedDescription]UTF8String]);return;}
-  gQueue=[gDev newCommandQueue];
-  gW=580;gH=700;
-  printf("Ready\n\n");fflush(stdout);
-  
-  NSWindow* win=[[NSWindow alloc]initWithContentRect:NSMakeRect(100,100,1000,700) styleMask:7 backing:NSBackingStoreBuffered defer:NO];
-  [win setTitle:@"AI Medical Display"];
-  [win makeKeyAndOrderFront:nil];
-  NSView* c=[win contentView];
-  [c setWantsLayer:YES];
-  [c.layer setBackgroundColor:[NSColor colorWithRed:.1 green:.1 blue:.12 alpha:1].CGColor];
-  
-  // 左侧边栏 - 深色
-  NSView* sb=[[NSView alloc]initWithFrame:NSMakeRect(0,0,200,700)];
-  [sb setWantsLayer:YES];
-  [sb.layer setBackgroundColor:[NSColor colorWithRed:.08 green:.08 blue:.1 alpha:1].CGColor];
-  [c addSubview:sb];
-  
-  NSTextField* title=[NSTextField labelWithString:@"📁 影像模态"];
-  [title setFrame:NSMakeRect(10,660,180,20)];
-  [title setTextColor:[NSColor whiteColor]];
-  [title setFont:[NSFont boldSystemFontOfSize:13]];
-  [sb addSubview:title];
-  
-  NSArray* names=@[@"CT 扫描",@"MRI 影像",@"X-Ray",@"超声"];
-  for(int i=0;i<4;i++){
-    NSButton* b=[NSButton buttonWithTitle:names[i] target:self action:@selector(selectMode:)];
-    [b setFrame:NSMakeRect(10,620-i*35,180,28)];
-    [b setTag:i];
-    [b setBezelStyle:NSBezelStyleRounded];
-    [sb addSubview:b];
-  }
-  
-  NSTextField* gsdfL=[NSTextField labelWithString:@"🟢 GSDF 已启用"];
-  [gsdfL setFrame:NSMakeRect(10,80,180,20)];
-  [gsdfL setTextColor:[NSColor colorWithRed:.3 green:.85 blue:.4 alpha:1]];
-  [gsdfL setFont:[NSFont systemFontOfSize:11]];
-  [sb addSubview:gsdfL];
-  
-  NSTextField* gpuL=[NSTextField labelWithString:@"GPU: Metal"];
-  [gpuL setFrame:NSMakeRect(10,55,180,20)];
-  [gpuL setTextColor:[NSColor lightGrayColor]];
-  [gpuL setFont:[NSFont systemFontOfSize:10]];
-  [sb addSubview:gpuL];
-  
-  // 中间 Metal 视图
-  MetalView* mv=[[MetalView alloc]initWithFrame:NSMakeRect(200,0,gW,700)];
-  [c addSubview:mv];
-  gLayer=(CAMetalLayer*)mv.layer;
-  gLayer.device=gDev;
-  gLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
-  gLayer.drawableSize=CGSizeMake(gW,gH);
-  gLayer.backgroundColor=[NSColor blackColor].CGColor;
-  
-  // 右侧信息面板
-  NSView* rp=[[NSView alloc]initWithFrame:NSMakeRect(780,0,220,700)];
-  [rp setWantsLayer:YES];
-  [rp.layer setBackgroundColor:[NSColor colorWithRed:.08 green:.08 blue:.1 alpha:1].CGColor];
-  [c addSubview:rp];
-  
-  NSTextField* aiT=[NSTextField labelWithString:@"🤖 AI 识别"];
-  [aiT setFrame:NSMakeRect(10,660,200,20)];
-  [aiT setTextColor:[NSColor whiteColor]];
-  [aiT setFont:[NSFont boldSystemFontOfSize:13]];
-  [rp addSubview:aiT];
-  
-  NSTextField* aiR=[NSTextField labelWithString:@"模态: CT 扫描"];
-  [aiR setFrame:NSMakeRect(10,635,200,20)];
-  [aiR setTextColor:[NSColor colorWithRed:.3 green:.7 blue:1 alpha:1]];
-  [aiR setFont:[NSFont boldSystemFontOfSize:14]];
-  [rp addSubview:aiR];
-  
-  NSTextField* conf=[NSTextField labelWithString:@"置信度: 91%"];
-  [conf setFrame:NSMakeRect(10,612,200,18)];
-  [conf setTextColor:[NSColor colorWithRed:.4 green:.9 blue:.4 alpha:1]];
-  [conf setFont:[NSFont systemFontOfSize:12]];
-  [rp addSubview:conf];
-  
-  NSBox* sep=[[NSBox alloc]initWithFrame:NSMakeRect(10,595,200,1)];
-  [sep setBoxType:NSBoxSeparator];
-  [rp addSubview:sep];
-  
-  NSTextField* paramT=[NSTextField labelWithString:@"🖥️ 显示参数"];
-  [paramT setFrame:NSMakeRect(10,560,200,20)];
-  [paramT setTextColor:[NSColor whiteColor]];
-  [paramT setFont:[NSFont boldSystemFontOfSize:13]];
-  [rp addSubview:paramT];
-  
-  NSTextField* brightL=[NSTextField labelWithString:@"亮度"];
-  [brightL setFrame:NSMakeRect(10,530,50,20)];
-  [brightL setTextColor:[NSColor lightGrayColor]];
-  [brightL setFont:[NSFont systemFontOfSize:11]];
-  [rp addSubview:brightL];
-  
-  NSSlider* bs=[NSSlider sliderWithValue:0 minValue:-.5 maxValue:.5 target:self action:@selector(bc:)];
-  [bs setFrame:NSMakeRect(60,530,150,20)];
-  [rp addSubview:bs];
-  
-  NSTextField* contL=[NSTextField labelWithString:@"对比度"];
-  [contL setFrame:NSMakeRect(10,505,50,20)];
-  [contL setTextColor:[NSColor lightGrayColor]];
-  [contL setFont:[NSFont systemFontOfSize:11]];
-  [rp addSubview:contL];
-  
-  NSSlider* cs=[NSSlider sliderWithValue:1 minValue:.5 maxValue:2 target:self action:@selector(cc:)];
-  [cs setFrame:NSMakeRect(60,505,150,20)];
-  [rp addSubview:cs];
-  
-  NSButton* gc=[NSButton checkboxWithTitle:@"GSDF 校准" target:self action:@selector(gsdfT:)];
-  [gc setFrame:NSMakeRect(10,475,200,20)];
-  [gc setState:1];
-  [rp addSubview:gc];
-  
-  [NSTimer scheduledTimerWithTimeInterval:1./60 target:self selector:@selector(render:) userInfo:nil repeats:YES];
-  printf("Window ready\n");fflush(stdout);
+- (void)layout {
+    [super layout];
+    _metalLayer.frame = self.bounds;
 }
 
--(void)selectMode:(NSButton*)b{gMode=(int)b.tag;printf("[Mode] %s\n",modalityNames[gMode]);fflush(stdout);}
--(void)bc:(NSSlider*)s{gBright=s.floatValue;}
--(void)cc:(NSSlider*)s{gContrast=s.floatValue;}
--(void)gsdfT:(NSButton*)b{gGSDF=(b.state==1);}
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    _metalLayer.frame = self.bounds;
+}
+
 @end
 
-int main(){
-  [NSApplication sharedApplication];
-  [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-  [NSApp setDelegate:[[AppDelegate alloc]init]];
-  [NSApp run];
-  return 0;
+@interface AppDelegate : NSObject <NSApplicationDelegate> {
+    id<MTLDevice> device;
+    id<MTLCommandQueue> queue;
+    id<MTLComputePipelineState> pipeline;
+    MetalView *metalView;
+    NSView *sidebar;
+    NSView *rightPanel;
+    NSTextField *statusLabel;
+    NSTextField *modalityLabel;
+    NSTimer *renderTimer;
+    int gMode;
+    int gGSDF;
+    NSWindow *mainWindow;
+}
+@end
+
+@implementation AppDelegate
+
+- (void)render {
+    if (!pipeline) return;
+    
+    CAMetalLayer *layer = (CAMetalLayer*)metalView.layer;
+    if (!layer) return;
+    
+    CGFloat scale = mainWindow.backingScaleFactor;
+    CGSize size = metalView.bounds.size;
+    CGSize drawableSize = CGSizeMake(size.width * scale, size.height * scale);
+    
+    if (drawableSize.width <= 0 || drawableSize.height <= 0) return;
+    layer.drawableSize = drawableSize;
+    
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    if (!drawable) return;
+    
+    simd_float4 params = {drawableSize.width, drawableSize.height, (float)gMode, (float)gGSDF};
+    
+    id<MTLCommandBuffer> cmd = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+    [enc setComputePipelineState:pipeline];
+    [enc setTexture:drawable.texture atIndex:0];
+    [enc setBytes:&params length:sizeof(params) atIndex:0];
+    
+    MTLSize threadsPerGroup = MTLSizeMake(16, 16, 1);
+    MTLSize numGroups = MTLSizeMake((drawableSize.width + 15) / 16,
+                                     (drawableSize.height + 15) / 16, 1);
+    [enc dispatchThreadgroups:numGroups threadsPerThreadgroup:threadsPerGroup];
+    [enc endEncoding];
+    [cmd presentDrawable:drawable];
+    [cmd commit];
+}
+
+- (void)selectMode:(id)sender {
+    gMode = (int)[sender tag];
+    [modalityLabel setStringValue:[NSString stringWithFormat:@"模态: %@", @[@"CT", @"MRI", @"X-Ray", @"超声"][gMode]]];
+    metalView.mode = gMode;
+}
+
+- (void)gsdfChanged:(NSButton*)checkbox {
+    gGSDF = (checkbox.state == 1) ? 1 : 0;
+    metalView.gsdf = gGSDF;
+}
+
+- (NSButton*)makeWhiteButton:(NSString*)title tag:(int)tag action:(SEL)action frame:(NSRect)frame {
+    NSButton *btn = [[NSButton alloc] initWithFrame:frame];
+    [btn setTitle:title];
+    [btn setTarget:self];
+    [btn setAction:action];
+    btn.tag = tag;
+    btn.bezelStyle = NSBezelStyleRounded;
+    
+    NSAttributedString *whiteTitle = [[NSAttributedString alloc]
+        initWithString:title
+            attributes:@{
+                NSForegroundColorAttributeName: [NSColor whiteColor],
+                NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium]
+            }];
+    [btn setAttributedTitle:whiteTitle];
+    return btn;
+}
+
+- (void)setupUI {
+    mainWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 1200, 800)
+                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                                                backing:NSBackingStoreBuffered defer:NO];
+    [mainWindow setTitle:@"AI Medical Display"];
+    [mainWindow setMinSize:NSMakeSize(800, 600)];
+    [mainWindow makeKeyAndOrderFront:nil];
+    
+    NSView *content = [mainWindow contentView];
+    [content setWantsLayer:YES];
+    [content.layer setBackgroundColor:[NSColor colorWithRed:0.12 green:0.12 blue:0.14 alpha:1.0].CGColor];
+    
+    // 左侧边栏 - 固定宽度 180
+    sidebar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 180, 800)];
+    [sidebar setWantsLayer:YES];
+    [sidebar.layer setBackgroundColor:[NSColor colorWithRed:0.08 green:0.08 blue:0.10 alpha:1.0].CGColor];
+    [sidebar setAutoresizingMask:NSViewMaxXMargin | NSViewHeightSizable];
+    [content addSubview:sidebar];
+    
+    NSTextField *title = [NSTextField labelWithString:@"📁 影像模态"];
+    title.frame = NSMakeRect(15, 760, 150, 24);
+    title.textColor = [NSColor whiteColor];
+    title.font = [NSFont boldSystemFontOfSize:14];
+    [sidebar addSubview:title];
+    
+    NSArray *names = @[@"CT 扫描", @"MRI 影像", @"X-Ray", @"超声"];
+    for (int i = 0; i < 4; i++) {
+        NSButton *btn = [self makeWhiteButton:names[i] tag:i action:@selector(selectMode:) frame:NSMakeRect(15, 720 - i * 38, 150, 32)];
+        [sidebar addSubview:btn];
+    }
+    
+    NSTextField *gsdfStatus = [NSTextField labelWithString:@"🟢 GSDF 已启用"];
+    gsdfStatus.frame = NSMakeRect(15, 100, 150, 20);
+    gsdfStatus.textColor = [NSColor colorWithRed:0.3 green:0.9 blue:0.4 alpha:1.0];
+    gsdfStatus.font = [NSFont systemFontOfSize:11];
+    [sidebar addSubview:gsdfStatus];
+    
+    // 右侧面板 - 固定宽度 200
+    rightPanel = [[NSView alloc] initWithFrame:NSMakeRect(1000, 0, 200, 800)];
+    [rightPanel setWantsLayer:YES];
+    [rightPanel.layer setBackgroundColor:[NSColor colorWithRed:0.08 green:0.08 blue:0.10 alpha:1.0].CGColor];
+    [rightPanel setAutoresizingMask:NSViewMinXMargin | NSViewHeightSizable];
+    [content addSubview:rightPanel];
+    
+    NSTextField *aiTitle = [NSTextField labelWithString:@"🤖 AI 识别"];
+    aiTitle.frame = NSMakeRect(15, 760, 170, 20);
+    aiTitle.textColor = [NSColor whiteColor];
+    aiTitle.font = [NSFont boldSystemFontOfSize:14];
+    [rightPanel addSubview:aiTitle];
+    
+    modalityLabel = [NSTextField labelWithString:@"模态: CT"];
+    modalityLabel.frame = NSMakeRect(15, 730, 170, 22);
+    modalityLabel.textColor = [NSColor colorWithRed:0.3 green:0.7 blue:1.0 alpha:1.0];
+    modalityLabel.font = [NSFont boldSystemFontOfSize:16];
+    [rightPanel addSubview:modalityLabel];
+    
+    NSTextField *infoLabel = [NSTextField labelWithString:@"来源: 合成图像"];
+    infoLabel.frame = NSMakeRect(15, 705, 170, 18);
+    infoLabel.textColor = [NSColor colorWithRed:0.4 green:0.9 blue:0.4 alpha:1.0];
+    infoLabel.font = [NSFont systemFontOfSize:12];
+    [rightPanel addSubview:infoLabel];
+    
+    NSBox *sep = [[NSBox alloc] initWithFrame:NSMakeRect(15, 685, 170, 1)];
+    sep.boxType = NSBoxSeparator;
+    [rightPanel addSubview:sep];
+    
+    NSTextField *ctrlTitle = [NSTextField labelWithString:@"🖥️ 显示控制"];
+    ctrlTitle.frame = NSMakeRect(15, 650, 170, 20);
+    ctrlTitle.textColor = [NSColor whiteColor];
+    ctrlTitle.font = [NSFont boldSystemFontOfSize:14];
+    [rightPanel addSubview:ctrlTitle];
+    
+    NSTextField *brightLbl = [NSTextField labelWithString:@"亮度"];
+    brightLbl.frame = NSMakeRect(15, 615, 50, 20);
+    brightLbl.textColor = [NSColor lightGrayColor];
+    brightLbl.font = [NSFont systemFontOfSize:11];
+    [rightPanel addSubview:brightLbl];
+    
+    NSSlider *brightSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(65, 615, 120, 20)];
+    brightSlider.minValue = -0.5;
+    brightSlider.maxValue = 0.5;
+    [rightPanel addSubview:brightSlider];
+    
+    NSButton *gsdfCheck = [NSButton checkboxWithTitle:@"GSDF 校准" target:self action:@selector(gsdfChanged:)];
+    gsdfCheck.frame = NSMakeRect(15, 580, 170, 20);
+    gsdfCheck.state = 1;
+    [rightPanel addSubview:gsdfCheck];
+    
+    statusLabel = [NSTextField labelWithString:@"✅ 就绪"];
+    statusLabel.frame = NSMakeRect(15, 20, 170, 18);
+    statusLabel.textColor = [NSColor lightGrayColor];
+    statusLabel.font = [NSFont systemFontOfSize:10];
+    [rightPanel addSubview:statusLabel];
+    
+    // Metal 视图 - 填充中间区域
+    metalView = [[MetalView alloc] initWithFrame:NSMakeRect(180, 0, 820, 800)];
+    [metalView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [content addSubview:metalView];
+    
+    // 配置 MetalLayer
+    CAMetalLayer *layer = (CAMetalLayer*)metalView.layer;
+    layer.device = device;
+    layer.pixelFormat = MTLPixelFormatRGBA8Unorm;
+    layer.backgroundColor = [NSColor blackColor].CGColor;
+    layer.contentsScale = mainWindow.backingScaleFactor;
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification*)note {
+    fprintf(stderr, "=== Starting ===\n");
+    gMode = 0;
+    gGSDF = 1;
+    
+    device = MTLCreateSystemDefaultDevice();
+    if (!device) { fprintf(stderr, "No Metal\n"); return; }
+    fprintf(stderr, "Metal: %s\n", [[device name] UTF8String]);
+    
+    NSError* err = nil;
+    id<MTLLibrary> lib = [device newLibraryWithSource:@(shader) options:nil error:&err];
+    if (err) { fprintf(stderr, "Shader: %s\n", [[err localizedDescription] UTF8String]); return; }
+    
+    id<MTLFunction> func = [lib newFunctionWithName:@"gen"];
+    pipeline = [device newComputePipelineStateWithFunction:func error:&err];
+    if (err) { fprintf(stderr, "Pipeline: %s\n", [[err localizedDescription] UTF8String]); return; }
+    
+    queue = [device newCommandQueue];
+    fprintf(stderr, "Pipeline OK\n");
+    
+    [self setupUI];
+    
+    // 渲染定时器
+    renderTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/30.0 target:self selector:@selector(render) userInfo:nil repeats:YES];
+    fprintf(stderr, "Ready\n");
+}
+
+- (void)applicationWillTerminate:(NSNotification*)note {
+    if (renderTimer) {
+        [renderTimer invalidate];
+        renderTimer = nil;
+    }
+}
+
+@end
+
+int main() {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        [NSApp setDelegate:[[AppDelegate alloc] init]];
+        [NSApp run];
+    }
+    return 0;
 }

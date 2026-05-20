@@ -289,7 +289,8 @@ void neon_sobel_edge(const uint8_t* gray,
                       uint8_t* edge,
                       int width, int height,
                       float threshold) {
-    int threshold_i = (int)(threshold * 256);  // 放大阈值
+    int threshold_i = threshold <= 1.0f ? static_cast<int>(threshold * 255.0f)
+                                         : static_cast<int>(threshold);
     
     for (int y = 1; y < height - 1; y++) {
         int i = y * width + 1;
@@ -305,8 +306,8 @@ void neon_sobel_edge(const uint8_t* gray,
             gy -= gray[i - width - 1] + 2 * gray[i - width] + gray[i - width + 1];
             gy += gray[i + width - 1] + 2 * gray[i + width] + gray[i + width + 1];
             
-            // 梯度幅度 (近似)
-            int mag = (abs(gx) + abs(gy) + 1) >> 1;
+            // 梯度幅度 (与标量版一致，保持数学等价性)
+            int mag = std::abs(gx) + std::abs(gy);
             
             edge[i] = (mag > threshold_i) ? 255 : 0;
         }

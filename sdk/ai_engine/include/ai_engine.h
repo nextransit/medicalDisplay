@@ -93,6 +93,13 @@ typedef struct {
 // ============================================================================
 typedef struct AIEngine AIEngine;
 
+typedef enum {
+    AI_BACKEND_STATUS_UNAVAILABLE = 0,
+    AI_BACKEND_STATUS_FALLBACK_RULES,
+    AI_BACKEND_STATUS_ONNX_ACTIVE,
+    AI_BACKEND_STATUS_MODEL_CONFIGURED_BUT_FAILED
+} AIBackendStatus;
+
 // ============================================================================
 // 引擎生命周期
 // ============================================================================
@@ -201,6 +208,20 @@ void ai_engine_get_stats(AIEngine* engine, uint64_t* total_inferences, float* av
  * @param engine 引擎句柄
  */
 void ai_engine_reset_stats(AIEngine* engine);
+
+/**
+ * 查询当前 AI backend 状态
+ * @param engine 引擎句柄
+ * @return backend 状态枚举
+ */
+AIBackendStatus ai_engine_get_backend_status(AIEngine* engine);
+
+/**
+ * 获取 backend 状态名称
+ * @param status backend 状态
+ * @return 静态字符串
+ */
+const char* ai_engine_backend_status_name(AIBackendStatus status);
 
 #ifdef __cplusplus
 }

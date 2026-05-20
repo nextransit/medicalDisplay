@@ -23,6 +23,12 @@ target_link_libraries(medicaldisplay_performance PUBLIC
     Threads::Threads
 )
 
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(medicaldisplay_performance PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(medicaldisplay_performance PUBLIC MEDICALDISPLAY_OPENMP_ENABLED)
+endif()
+
 if(MSVC)
     target_compile_options(medicaldisplay_performance PRIVATE /W4)
 else()
@@ -36,11 +42,3 @@ install(TARGETS medicaldisplay_performance
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/medicaldisplay/performance
         FILES_MATCHING PATTERN "*.h")
-
-# ARM NEON SIMD实现 (可选)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm")
-    set(SIMD_NEON_SOURCES src/simd_neon.cpp)
-    message(STATUS "ARM NEON support: enabled")
-else()
-    set(SIMD_NEON_SOURCES "")
-endif()

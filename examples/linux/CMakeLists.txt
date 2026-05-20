@@ -52,6 +52,10 @@ endif()
 foreach(target_name medical_display_demo dicom_receiver multi_display_demo gsdf_calibration_demo cloud_demo)
     add_executable(${target_name} ${target_name}.cpp)
     target_link_libraries(${target_name} PRIVATE medical_demo_support Threads::Threads)
+    target_include_directories(${target_name} PRIVATE
+        ${MEDICALDISPLAY_SDK_ROOT}/ai_engine/include
+    )
+    target_link_libraries(${target_name} PRIVATE medicaldisplay_ai)
 endforeach()
 
 # Predictive maintenance demo

@@ -66,12 +66,16 @@ std::unique_ptr<ONNXBackend> ONNXBackend::Create(const char* model_path, bool us
             auto type_info = backend->session_->session.GetInputTypeInfo(0);
             auto input_shape = type_info.GetTensorTypeAndShapeInfo().GetShape();
             backend->input_shape_ = input_shape;
+            auto in_name = backend->session_->session.GetInputNameAllocated(0, allocator);
+            backend->input_node_name_ = in_name.get();
         }
         
         if (num_output_nodes > 0) {
             auto type_info = backend->session_->session.GetOutputTypeInfo(0);
             auto output_shape = type_info.GetTensorTypeAndShapeInfo().GetShape();
             backend->output_shape_ = output_shape;
+            auto out_name = backend->session_->session.GetOutputNameAllocated(0, allocator);
+            backend->output_node_name_ = out_name.get();
         }
         
         return backend;
@@ -102,24 +106,12 @@ int ONNXBackend::Run(const float* input, int input_size, float* output, int outp
         auto& session = session_->session;
         auto& memory_info = session_->memory_info;
         
-        size_t num_input_nodes = session.GetInputCount();
-        size_t num_output_nodes = session.GetOutputCount();
-        
-        if (num_input_nodes == 0 || num_output_nodes == 0) {
+        if (input_node_name_.empty() || output_node_name_.empty()) {
             return -1;
         }
         
-        // 分配器获取输入/输出名称
-        Ort::AllocatorWithDefaultOptions allocator;
-        
-        std::vector<const char*> input_names;
-        std::vector<const char*> output_names;
-        
-        auto in_name = session.GetInputNameAllocated(0, allocator);
-        input_names.push_back(in_name.get());
-        
-        auto out_name = session.GetOutputNameAllocated(0, allocator);
-        output_names.push_back(out_name.get());
+        const char* input_names[] = { input_node_name_.c_str() };
+        const char* output_names[] = { output_node_name_.c_str() };
         
         // 准备输入张量
         std::vector<int64_t> input_shape = input_shape_;
@@ -127,17 +119,16 @@ int ONNXBackend::Run(const float* input, int input_size, float* output, int outp
             input_shape = {1, input_size};
         }
         
-        std::vector<float> input_data(input, input + input_size);
-        
+        // 避免 std::vector<float> 的堆分配与数据拷贝，直接包装外部 input 缓冲
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-            memory_info, input_data.data(), input_data.size(),
+            memory_info, const_cast<float*>(input), static_cast<size_t>(input_size),
             input_shape.data(), input_shape.size());
         
         // 执行推理 (ONNX Runtime 1.26 返回 std::vector<Ort::Value>)
         auto output_tensors = session.Run(
             Ort::RunOptions{nullptr},
-            input_names.data(), &input_tensor, 1,
-            output_names.data(), 1);
+            input_names, &input_tensor, 1,
+            output_names, 1);
         
         if (output_tensors.empty()) {
             return -1;

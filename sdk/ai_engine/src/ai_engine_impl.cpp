@@ -101,10 +101,8 @@ static void fill_best_result(const float* scores, AIRecognitionResult* result) {
     result->strategy = DEFAULT_STRATEGIES[best_idx];
 }
 
-float* preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h) {
-    // [P1-OPT] Fused preprocessing: allocate + resize + normalize in single pass
-    float* output = new float[static_cast<size_t>(target_w) * target_h];
-
+void preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target_w, int target_h, float* output) {
+    if (!output) return;
     const float scale = 1.0f / ((1 << bits) - 1);
     const float inv_stddev = 1.0f / 0.226f;  // Precompute inverse for multiply
     const float mean = 0.449f;
@@ -120,14 +118,10 @@ float* preprocess_dicom(const uint16_t* data, int w, int h, int bits, int target
             output[y * target_w + x] = (val - mean) * inv_stddev;
         }
     }
-
-    return output;
 }
 
-float* preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h) {
-    // [P1-OPT] Fused preprocessing: allocate + resize + normalize in single pass
-    float* output = new float[static_cast<size_t>(target_w) * target_h];
-
+void preprocess_image(const uint8_t* data, int w, int h, int channels, int target_w, int target_h, float* output) {
+    if (!output) return;
     const float inv_stddev = 1.0f / 0.226f;  // Precompute inverse for multiply
     const float mean = 0.449f;
     const float x_ratio = static_cast<float>(w) / target_w;
@@ -143,8 +137,6 @@ float* preprocess_image(const uint8_t* data, int w, int h, int channels, int tar
             output[y * target_w + x] = (val - mean) * inv_stddev;
         }
     }
-
-    return output;
 }
 
 // [P1-OPT] Internal batch preprocessing with reusable buffer
@@ -223,11 +215,15 @@ int ai_engine_recognize_from_dicom(AIEngine* engine, const uint16_t* dicom_data,
     if (!engine || !dicom_data || !result) return -1;
 
     auto start = std::chrono::high_resolution_clock::now();
-    std::unique_ptr<float[]> input(medical_display::preprocess_dicom(
-        dicom_data, width, height, bits_allocated, engine->config.input_width, engine->config.input_height));
+    size_t required_size = static_cast<size_t>(engine->config.input_width) * engine->config.input_height;
+    float* input_buffer = get_batch_buffer(required_size);
+    if (!input_buffer) return -1;
+
+    medical_display::preprocess_dicom(
+        dicom_data, width, height, bits_allocated, engine->config.input_width, engine->config.input_height, input_buffer);
 
     float scores[MODALITY_COUNT];
-    if (engine->model_runner->Run(input.get(), scores, MODALITY_COUNT) != 0) {
+    if (engine->model_runner->Run(input_buffer, scores, MODALITY_COUNT) != 0) {
         return -1;
     }
 
@@ -242,11 +238,15 @@ int ai_engine_recognize_from_image(AIEngine* engine, const uint8_t* image_data, 
     if (!engine || !image_data || !result) return -1;
 
     auto start = std::chrono::high_resolution_clock::now();
-    std::unique_ptr<float[]> input(medical_display::preprocess_image(
-        image_data, width, height, channels, engine->config.input_width, engine->config.input_height));
+    size_t required_size = static_cast<size_t>(engine->config.input_width) * engine->config.input_height;
+    float* input_buffer = get_batch_buffer(required_size);
+    if (!input_buffer) return -1;
+
+    medical_display::preprocess_image(
+        image_data, width, height, channels, engine->config.input_width, engine->config.input_height, input_buffer);
 
     float scores[MODALITY_COUNT];
-    if (engine->model_runner->Run(input.get(), scores, MODALITY_COUNT) != 0) {
+    if (engine->model_runner->Run(input_buffer, scores, MODALITY_COUNT) != 0) {
         return -1;
     }
 
@@ -300,7 +300,8 @@ int ai_engine_recognize_batch(AIEngine* engine, const uint8_t** frames, int fram
         // Run inference
         if (engine->model_runner->Run(batch_buffer, scores, MODALITY_COUNT) == 0) {
             medical_display::fill_best_result(scores, &results[index]);
-            results[index].inference_time_ms = 0.5f;  // Simplified timing
+            results[index].inference_time_ms = 0.0f;
+            medical_display::update_stats(engine, results[index].inference_time_ms);
             processed++;
         }
     }
@@ -322,6 +323,32 @@ void ai_engine_reset_stats(AIEngine* engine) {
     if (!engine) return;
     engine->total_inferences = 0;
     engine->cumulative_latency_ms = 0.0f;
+}
+
+AIBackendStatus ai_engine_get_backend_status(AIEngine* engine) {
+    if (!engine || !engine->model_runner) {
+        return AI_BACKEND_STATUS_UNAVAILABLE;
+    }
+
+    if (engine->model_runner->HasONNXModel()) {
+        return AI_BACKEND_STATUS_ONNX_ACTIVE;
+    }
+
+    if (engine->config.model_path[0] != '\0') {
+        return AI_BACKEND_STATUS_MODEL_CONFIGURED_BUT_FAILED;
+    }
+
+    return AI_BACKEND_STATUS_FALLBACK_RULES;
+}
+
+const char* ai_engine_backend_status_name(AIBackendStatus status) {
+    switch (status) {
+        case AI_BACKEND_STATUS_UNAVAILABLE: return "UNAVAILABLE";
+        case AI_BACKEND_STATUS_FALLBACK_RULES: return "FALLBACK_RULES";
+        case AI_BACKEND_STATUS_ONNX_ACTIVE: return "ONNX_ACTIVE";
+        case AI_BACKEND_STATUS_MODEL_CONFIGURED_BUT_FAILED: return "MODEL_CONFIGURED_BUT_FAILED";
+        default: return "UNKNOWN";
+    }
 }
 
 }  // extern "C"

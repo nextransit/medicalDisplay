@@ -47,6 +47,8 @@ TEST_F(AIEngineTest, CreateAndResetStats) {
 
     EXPECT_EQ(0u, total);
     EXPECT_FLOAT_EQ(0.0f, avg);
+    EXPECT_EQ(AI_BACKEND_STATUS_FALLBACK_RULES, ai_engine_get_backend_status(engine));
+    EXPECT_STREQ("FALLBACK_RULES", ai_engine_backend_status_name(ai_engine_get_backend_status(engine)));
 }
 
 TEST_F(AIEngineTest, RecognizeFromMetadataUsesStrategiesAndCaching) {
@@ -111,10 +113,16 @@ TEST_F(AIEngineTest, RecognizeFromDicomAndBatchProcessing) {
     EXPECT_EQ(2, ai_engine_recognize_batch(engine, frames, 2, batch_results));
     EXPECT_GE(batch_results[0].confidence, 0.0f);
     EXPECT_GE(batch_results[1].confidence, 0.0f);
+
+    uint64_t total = 0;
+    float avg = 0.0f;
+    ai_engine_get_stats(engine, &total, &avg);
+    EXPECT_EQ(3u, total);
 }
 
 TEST_F(AIEngineTest, ReloadModelPathPersistsAndBadArgsFail) {
     EXPECT_EQ(0, ai_engine_reload_model(engine, "/tmp/fake-model.bin"));
+    EXPECT_EQ(AI_BACKEND_STATUS_MODEL_CONFIGURED_BUT_FAILED, ai_engine_get_backend_status(engine));
 
     AIRecognitionResult result{};
     EXPECT_EQ(-1, ai_engine_recognize_from_image(nullptr, nullptr, 0, 0, 0, &result));
@@ -299,6 +307,68 @@ TEST(DicomReaderUnitTest, SopClassHuAndModalityLutBehaviors) {
     EXPECT_EQ(250, dicom_apply_modality_lut(2, modality_lut, 4));
     EXPECT_EQ(400, dicom_apply_modality_lut(99, modality_lut, 4));
     EXPECT_EQ(7, dicom_apply_modality_lut(7, nullptr, 0));
+}
+
+TEST(DicomReaderUnitTest, MultiFrameDatasetReadsFrameCountAndFrameOffsets) {
+    const std::string path = test_helpers::create_multiframe_dicom_file();
+    ASSERT_FALSE(path.empty());
+
+    DICOM_Dataset dataset = dicom_open(path.c_str());
+    ASSERT_NE(nullptr, dataset);
+
+    EXPECT_EQ(2, dicom_get_frame_count(dataset));
+
+    DICOM_PixelData all_pixels{};
+    ASSERT_EQ(0, dicom_read_pixels(dataset, &all_pixels));
+    ASSERT_NE(nullptr, all_pixels.pixel_data);
+    EXPECT_EQ(16u, all_pixels.pixel_data_size);
+
+    DICOM_PixelData frame0{};
+    ASSERT_EQ(0, dicom_read_frame(dataset, 0, &frame0));
+    ASSERT_NE(nullptr, frame0.pixel_data);
+    EXPECT_EQ(8u, frame0.pixel_data_size);
+    auto* frame0_pixels = static_cast<const uint16_t*>(frame0.pixel_data);
+    EXPECT_EQ(1u, frame0_pixels[0]);
+    EXPECT_EQ(4u, frame0_pixels[3]);
+
+    DICOM_PixelData frame1{};
+    ASSERT_EQ(0, dicom_read_frame(dataset, 1, &frame1));
+    ASSERT_NE(nullptr, frame1.pixel_data);
+    EXPECT_EQ(8u, frame1.pixel_data_size);
+    auto* frame1_pixels = static_cast<const uint16_t*>(frame1.pixel_data);
+    EXPECT_EQ(11u, frame1_pixels[0]);
+    EXPECT_EQ(14u, frame1_pixels[3]);
+
+    DICOM_Metadata metadata{};
+    dicom_extract_metadata(dataset, &metadata);
+    EXPECT_EQ(2, metadata.number_of_frames);
+    EXPECT_STREQ("US", metadata.modality);
+
+    dicom_close(dataset);
+    std::remove(path.c_str());
+}
+
+TEST(DicomReaderUnitTest, RleDatasetDecodesIntoMainPixelApi) {
+    const std::string path = test_helpers::create_rle_dicom_file();
+    ASSERT_FALSE(path.empty());
+
+    DICOM_Dataset dataset = dicom_open(path.c_str());
+    ASSERT_NE(nullptr, dataset);
+    EXPECT_EQ(DICOM_TRANSFER_RLE_LOSSLESS, dicom_get_transfer_syntax(dataset));
+
+    DICOM_PixelData pixel_info{};
+    ASSERT_EQ(0, dicom_read_pixels(dataset, &pixel_info));
+    ASSERT_NE(nullptr, pixel_info.pixel_data);
+    EXPECT_EQ(4u, pixel_info.pixel_data_size);
+
+    const auto* pixels = static_cast<const uint8_t*>(pixel_info.pixel_data);
+    EXPECT_EQ(1u, pixels[0]);
+    EXPECT_EQ(2u, pixels[1]);
+    EXPECT_EQ(3u, pixels[2]);
+    EXPECT_EQ(4u, pixels[3]);
+
+    dicom_close(dataset);
+    std::remove(path.c_str());
 }
 
 TEST(SurgicalVideoUnitTest, BatchExUsesPerFrameMetadataAndPreservesOutputFormat) {

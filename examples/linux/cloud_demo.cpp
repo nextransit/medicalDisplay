@@ -1,4 +1,5 @@
 #include "demo_support.h"
+#include "ai_engine.h"
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -220,14 +221,25 @@ int main(int argc, char* argv[]) {
             std::cout << "使用本地云清单: " << manifest_path << '\n';
         }
 
+        AIEngineConfig ai_config{};
+        ai_config.input_width = 512;
+        ai_config.input_height = 512;
+        AIEngine* ai_engine = ai_engine_create(&ai_config);
+        if (!ai_engine) {
+            throw std::runtime_error("AIEngine 初始化失败");
+        }
+        const char* ai_backend = ai_engine_backend_status_name(ai_engine_get_backend_status(ai_engine));
+
         std::ofstream telemetry(options.output_dir / "telemetry.jsonl", std::ios::app);
         telemetry << "{\"time\":\"" << medicaldemo::now_local_string()
                   << "\",\"device_id\":\"" << options.device_id
                   << "\",\"version\":\"" << options.current_version
+                  << "\",\"ai_backend\":\"" << ai_backend
                   << "\",\"fps\":60.0,\"temperature\":42.5,\"health\":98.0}\n";
 
         if (compare_versions(options.current_version, manifest.version) >= 0) {
             std::cout << "当前版本已是最新: " << options.current_version << '\n';
+            ai_engine_destroy(ai_engine);
             return 0;
         }
 
@@ -276,6 +288,7 @@ int main(int argc, char* argv[]) {
         std::cout << "升级完成，当前版本: " << manifest.version << '\n';
         std::cout << "升级包大小: " << medicaldemo::pretty_bytes(std::filesystem::file_size(staged_package)) << '\n';
         std::cout << "设备状态文件: " << (options.output_dir / "device_state.json") << '\n';
+        ai_engine_destroy(ai_engine);
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "cloud_demo 失败: " << ex.what() << '\n';

@@ -1,7 +1,7 @@
 # 实现状态 / Implementation Status
 
 **版本**: v1.0  
-**日期**: 2026-05-18
+**日期**: 2026-05-19
 
 ---
 
@@ -9,16 +9,10 @@
 
 | 测试套件 | 通过 | 状态 |
 |---------|------|------|
-| GSDF数学测试 | 4/4 | ✅ PASS |
-| AI引擎测试 | 7/7 | ✅ PASS |
-| 显示引擎测试 | 3/3 | ✅ PASS |
-| DICOM读取测试 | 2/2 | ✅ PASS |
-| 色彩与GSDF测试 | 1/1 | ✅ PASS |
-| DRM测试 | 3/3 | ✅ PASS |
-| 云安全测试 | 9/9 | ✅ PASS |
-| DICOM安全测试 | 6/6 | ✅ PASS |
-| 管道测试 | 2/2 | ✅ PASS |
-| **总计** | **40/40** | ✅ **100%** |
+| `test_performance` | 16/16 | ✅ PASS |
+| `test_dicom_fuzz` | 10/10 | ✅ PASS |
+| `test_suite` | 15/15 | ✅ PASS |
+| **本轮定向验证** | **41/41** | ✅ **100%** |
 
 ---
 
@@ -39,28 +33,35 @@
 
 | 功能 | 状态 | 验证 |
 |------|------|------|
-| 模态识别框架 | ✅ DONE | test_ai_engine 7/7 |
-| 元数据快速识别 | ✅ DONE | test_ai_engine |
-| 策略推荐 | ✅ DONE | test_display_pipeline |
-| ONNX Runtime | ✅ DONE | Homebrew onnxruntime |
-| 规则基础fallback | ✅ DONE | test_ai_engine |
+| 模态识别框架 | ✅ DONE | `test_suite` |
+| 元数据快速识别 | ✅ DONE | `test_suite` |
+| 策略推荐 | ✅ DONE | `test_suite` |
+| ONNX Runtime 接口 | ✅ DONE | 构建探测通过 |
+| 规则基础fallback | ✅ DONE | `test_suite` |
+| backend 状态可观测 API | ✅ DONE | `test_suite` |
+| 真实模型状态对外展示 | ⚠️ PARTIAL | 已接到 Linux 示例，仍缺 GUI / cloud SDK 遥测 |
 
 ### 3. DICOM 支持
 
 | 功能 | 状态 | 验证 |
 |------|------|------|
-| DICOM读取器 | ✅ DONE | test_dicom_reader 2/2 |
-| GSDF (Part 14) | ✅ DONE | test_gsdf 4/4 |
-| 像素数据处理 | ✅ DONE | test_dicom_reader |
-| 窗宽窗位 | ✅ DONE | test_display_pipeline |
+| DICOM读取器 | ✅ DONE | `test_suite` / `test_dicom_fuzz` |
+| GSDF (Part 14) | ✅ DONE | 现有 GSDF 测试集 |
+| 未压缩像素数据读取 | ✅ DONE | `test_suite` |
+| 未压缩多帧读取 | ✅ DONE | `test_suite` |
+| RLE Lossless 主 API 解码 | ✅ DONE | `test_suite` |
+| 压缩 JPEG/J2K 解码 | ⚠️ PARTIAL | 主 API 仍未产品化 |
+| 窗宽窗位 | ✅ DONE | `test_suite` |
 
 ### 4. GPU 加速
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| Metal (macOS) | ✅ DONE | examples/macos/MetalMedicalDemo |
-| SIMD (x86) | ✅ DONE | 集成在GSDF中 |
-| Vulkan (Linux) | ⚠️ STUB | 框架存在 |
+| Metal (macOS) | ✅ DONE | 示例路径存在 |
+| SIMD (x86) | ✅ DONE | `test_performance` |
+| OpenMP 并行 | ⚠️ CONDITIONAL | 构建期自动探测 |
+| NEON dispatch | ⚠️ STUB | 默认未启用，避免假可用 |
+| Vulkan (Linux) | ⚠️ STUB | 构建接线已修正，功能未验收 |
 
 ---
 
@@ -70,20 +71,20 @@
 |------|------|------|
 | ai_engine | ✅ DONE | ONNX + 规则fallback |
 | display_engine | ✅ DONE | DRM + GSDF |
-| surgical_video | ⚠️ STUB | 框架完成，需调试 |
-| dicom | ✅ DONE | GSDF完全实现 |
+| surgical_video | ⚠️ PARTIAL | Vulkan 源文件接线已修，主 GPU 能力未验收 |
+| dicom | ✅ DONE | 未压缩单帧/多帧主 API 已打通 |
 | common | ✅ DONE | SIMD工具 |
 | platform/linux | ✅ DONE | DRM/KMS |
 | platform/android | ❌ TODO | 未实现 |
 | cloud | ⚠️ STUB | 安全验证完成 |
-| digital_twin | ❌ TODO | 未实现 |
-| federated | ❌ TODO | 未实现 |
-| multimodal | ❌ TODO | 未实现 |
-| predictive_maintenance | ❌ TODO | 未实现 |
-| performance | ⚠️ STUB | 内存池框架 |
-| ar_overlay | ❌ TODO | 未实现 |
-| multiscreen | ❌ TODO | 未实现 |
-| ambient_light | ❌ TODO | 未实现 |
+| digital_twin | ⚠️ API_READY | 内存态实现，未接持久化/云 |
+| federated | ⚠️ API_READY | 本地训练框架存在，未接真实服务 |
+| multimodal | ⚠️ API_READY | 模块存在，未做真实临床链路验收 |
+| predictive_maintenance | ⚠️ API_READY | 算法框架存在，时间轴仍需收敛 |
+| performance | ✅ DONE | P0 内存池 correctness 已修复 |
+| ar_overlay | ⚠️ API_READY | 基础 API 存在 |
+| multiscreen | ⚠️ SIMULATED | 仍是模拟枚举 |
+| ambient_light | ⚠️ SIMULATED | 仍返回模拟 lux |
 
 ---
 
@@ -98,7 +99,7 @@
 
 ## 下一步计划
 
-1. 🔧 **完善 macOS Metal GUI** - 完成真实DICOM显示
-2. ⚠️ **调试 Vulkan 渲染** - Linux GPU 显示
-3. ⚠️ **完善术野视频** - 血流检测临床验证
-4. ✅ **精简文档** - 删除假实现描述
+1. 🔧 **继续 DICOM 压缩链路** - JPEG/JPEG2000 主 API 产品化
+2. ⚠️ **继续 AI backend 可观测性落地** - 接到 GUI / cloud SDK 遥测
+3. ⚠️ **继续 Vulkan / surgical_video GPU 验收** - 不只修构建接线
+4. ⚠️ **清理性能文档漂移** - benchmark 条件与结果对齐

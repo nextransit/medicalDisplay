@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <string>
+#include <vector>
 #include <zlib.h>
 
 #ifdef _WIN32
@@ -60,6 +62,7 @@ struct DICOM_Context {
     int rows;
     int columns;
     int number_of_frames;
+    bool encapsulated_pixel_data;
 
     // Metadata
     char modality[16];
@@ -101,35 +104,203 @@ static inline void split_tag(uint32_t tag, uint16_t* group, uint16_t* element) {
     *element = (uint16_t)(tag & 0xFFFF);
 }
 
-static int read_explicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint8_t* vr, uint32_t* length, uint8_t** data) {
-    // [P0-FIX] Explicit VR 格式: 4字节tag + 2字节VR + 2字节reserved + 4字节length (或2字节length)
-    // 需要至少8字节buffer
-    uint8_t tag_bytes[8];
-    if (fread(tag_bytes, 1, 8, ctx->file) != 8) return -1;
-    
-    if (ctx->big_endian) {
-        *tag = ((uint32_t)tag_bytes[0] << 24) | ((uint32_t)tag_bytes[1] << 16) | 
-               ((uint32_t)tag_bytes[2] << 8) | tag_bytes[3];
-    } else {
-        *tag = ((uint32_t)tag_bytes[2] << 24) | ((uint32_t)tag_bytes[3] << 16) | 
-               ((uint32_t)tag_bytes[0] << 8) | tag_bytes[1];
-        uint16_t g = ((uint16_t)tag_bytes[0] << 8) | tag_bytes[1];
-        uint16_t e = ((uint16_t)tag_bytes[2] << 8) | tag_bytes[3];
-        *tag = ((uint32_t)g << 16) | e;
+static uint16_t read_u16_value(const uint8_t* data, bool big_endian) {
+    if (!data) return 0;
+    if (big_endian) {
+        return static_cast<uint16_t>((data[0] << 8) | data[1]);
     }
-    
-    vr[0] = tag_bytes[4];
-    vr[1] = tag_bytes[5];
-    
-    if (vr[0] == 'O' && (vr[1] == 'B' || vr[1] == 'O' || vr[1] == 'W' || vr[1] == 'X')) {
-        // Skip 2 bytes reserved, read 4-byte length
-        fseek(ctx->file, 2, SEEK_CUR);
+    return static_cast<uint16_t>((data[1] << 8) | data[0]);
+}
+
+static uint32_t read_u32_value(const uint8_t* data, bool big_endian) {
+    if (!data) return 0;
+    if (big_endian) {
+        return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+               ((uint32_t)data[2] << 8) | (uint32_t)data[3];
+    }
+    return ((uint32_t)data[3] << 24) | ((uint32_t)data[2] << 16) |
+           ((uint32_t)data[1] << 8) | (uint32_t)data[0];
+}
+
+static float parse_float_ascii(const uint8_t* data, uint32_t length, float fallback) {
+    if (!data || length == 0) return fallback;
+    char temp_buf[64];
+    size_t copy_len = length < sizeof(temp_buf) - 1 ? length : sizeof(temp_buf) - 1;
+    memcpy(temp_buf, data, copy_len);
+    temp_buf[copy_len] = '\0';
+    return std::strtof(temp_buf, nullptr);
+}
+
+static std::string parse_string_ascii(const uint8_t* data, uint32_t length) {
+    if (!data || length == 0) return {};
+    std::string value(reinterpret_cast<const char*>(data), reinterpret_cast<const char*>(data) + length);
+    while (!value.empty() && (value.back() == '\0' || value.back() == ' ')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+static bool is_encapsulated_transfer_syntax(DICOM_TransferSyntax syntax) {
+    switch (syntax) {
+        case DICOM_TRANSFER_JPEG_BASELINE_1:
+        case DICOM_TRANSFER_JPEG_EXTENDED_2_4:
+        case DICOM_TRANSFER_JPEG_LOSSLESS:
+        case DICOM_TRANSFER_JPEG_LS_LOSSLESS:
+        case DICOM_TRANSFER_JPEG_LS_LOSSY:
+        case DICOM_TRANSFER_JPEG2000_LOSSLESS:
+        case DICOM_TRANSFER_JPEG2000_LOSSY:
+        case DICOM_TRANSFER_RLE_LOSSLESS:
+        case DICOM_TRANSFER_MPEG2_MAIN_PROFILE:
+        case DICOM_TRANSFER_MPEG4_AVC_H264_HIGH_PROFILE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool map_transfer_syntax_uid(const char* uid, DICOM_TransferSyntax* syntax, bool* implicit_vr, bool* big_endian) {
+    if (!uid || !syntax || !implicit_vr || !big_endian) return false;
+
+    if (strcmp(uid, "1.2.840.10008.1.2") == 0) {
+        *syntax = DICOM_TRANSFER_IMPLICIT_VR_LITTLE_ENDIAN;
+        *implicit_vr = true;
+        *big_endian = false;
+        return true;
+    }
+    if (strcmp(uid, "1.2.840.10008.1.2.1") == 0) {
+        *syntax = DICOM_TRANSFER_EXPLICIT_VR_LITTLE_ENDIAN;
+        *implicit_vr = false;
+        *big_endian = false;
+        return true;
+    }
+    if (strcmp(uid, "1.2.840.10008.1.2.2") == 0) {
+        *syntax = DICOM_TRANSFER_EXPLICIT_VR_BIG_ENDIAN;
+        *implicit_vr = false;
+        *big_endian = true;
+        return true;
+    }
+    if (strcmp(uid, "1.2.840.10008.1.2.5") == 0) {
+        *syntax = DICOM_TRANSFER_RLE_LOSSLESS;
+        *implicit_vr = false;
+        *big_endian = false;
+        return true;
+    }
+    if (strcmp(uid, "1.2.840.10008.1.2.4.50") == 0) {
+        *syntax = DICOM_TRANSFER_JPEG_BASELINE_1;
+        *implicit_vr = false;
+        *big_endian = false;
+        return true;
+    }
+    if (strcmp(uid, "1.2.840.10008.1.2.4.90") == 0) {
+        *syntax = DICOM_TRANSFER_JPEG2000_LOSSLESS;
+        *implicit_vr = false;
+        *big_endian = false;
+        return true;
+    }
+    return false;
+}
+
+static int parse_rle_header(const uint8_t* data, size_t data_len, uint32_t* offsets, uint32_t* segment_count) {
+    if (!data || data_len < 64 || !offsets || !segment_count) return -1;
+    *segment_count = read_u32_value(data, false);
+    if (*segment_count == 0 || *segment_count > 15) return -1;
+    for (uint32_t idx = 0; idx < *segment_count; ++idx) {
+        offsets[idx] = read_u32_value(data + 4 + idx * 4, false);
+        if (offsets[idx] >= data_len) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int decode_rle_segment(const uint8_t* src, size_t src_size, uint8_t* dst, size_t dst_size) {
+    if (!src || !dst) return -1;
+    size_t src_pos = 0;
+    size_t dst_pos = 0;
+    while (src_pos < src_size && dst_pos < dst_size) {
+        const int8_t n = static_cast<int8_t>(src[src_pos++]);
+        if (n >= 0) {
+            const size_t count = static_cast<size_t>(n) + 1;
+            if (src_pos + count > src_size) return -1;
+            const size_t writable = std::min(count, dst_size - dst_pos);
+            memcpy(dst + dst_pos, src + src_pos, writable);
+            src_pos += count;
+            dst_pos += writable;
+        } else if (n > -128) {
+            if (src_pos >= src_size) return -1;
+            const uint8_t value = src[src_pos++];
+            const size_t count = static_cast<size_t>(1 - n);
+            const size_t writable = std::min(count, dst_size - dst_pos);
+            memset(dst + dst_pos, value, writable);
+            dst_pos += writable;
+        }
+    }
+    return dst_pos == dst_size ? 0 : -1;
+}
+
+static int decode_rle_frame(const uint8_t* data, size_t data_len, int rows, int columns,
+                            int samples_per_pixel, int bits_allocated,
+                            uint8_t* output, size_t output_size) {
+    if (!data || !output || rows <= 0 || columns <= 0 || bits_allocated % 8 != 0) return -1;
+    const int bytes_per_sample = bits_allocated / 8;
+    const size_t pixel_count = static_cast<size_t>(rows) * static_cast<size_t>(columns);
+    const size_t expected_size = pixel_count * static_cast<size_t>(samples_per_pixel) * static_cast<size_t>(bytes_per_sample);
+    if (output_size < expected_size) return -1;
+
+    uint32_t offsets[15] = {};
+    uint32_t segment_count = 0;
+    if (parse_rle_header(data, data_len, offsets, &segment_count) != 0) return -1;
+    if (segment_count != static_cast<uint32_t>(samples_per_pixel * bytes_per_sample)) return -1;
+
+    std::vector<uint32_t> segment_ends(segment_count, static_cast<uint32_t>(data_len));
+    for (uint32_t idx = 0; idx + 1 < segment_count; ++idx) {
+        segment_ends[idx] = offsets[idx + 1];
+    }
+
+    std::vector<uint8_t> decoded_plane(pixel_count);
+    memset(output, 0, expected_size);
+
+    for (int sample = 0; sample < samples_per_pixel; ++sample) {
+        for (int byte_offset = 0; byte_offset < bytes_per_sample; ++byte_offset) {
+            const int segment_index = sample * bytes_per_sample + byte_offset;
+            const uint32_t start = offsets[segment_index];
+            const uint32_t end = segment_ends[segment_index];
+            if (end <= start || end > data_len) return -1;
+            if (decode_rle_segment(data + start, end - start, decoded_plane.data(), pixel_count) != 0) return -1;
+
+            const int output_byte_index = bytes_per_sample - byte_offset - 1;
+            for (size_t pixel = 0; pixel < pixel_count; ++pixel) {
+                const size_t base = (pixel * static_cast<size_t>(samples_per_pixel) + static_cast<size_t>(sample)) * static_cast<size_t>(bytes_per_sample);
+                output[base + output_byte_index] = decoded_plane[pixel];
+            }
+        }
+    }
+    return 0;
+}
+
+static int read_explicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint8_t* vr, uint32_t* length, uint8_t** data) {
+    uint8_t header[8];
+    if (fread(header, 1, sizeof(header), ctx->file) != sizeof(header)) return -1;
+
+    const uint16_t group = read_u16_value(header, ctx->big_endian);
+    const uint16_t element = read_u16_value(header + 2, ctx->big_endian);
+    *tag = make_tag(group, element);
+
+    vr[0] = header[4];
+    vr[1] = header[5];
+
+    const bool long_length_vr =
+        (vr[0] == 'O' && (vr[1] == 'B' || vr[1] == 'W' || vr[1] == 'F')) ||
+        (vr[0] == 'S' && vr[1] == 'Q') ||
+        (vr[0] == 'U' && (vr[1] == 'N' || vr[1] == 'T' || vr[1] == 'C' || vr[1] == 'R')) ||
+        (vr[0] == 'O' && vr[1] == 'D');
+
+    if (long_length_vr) {
         uint8_t len_bytes[4];
-        fread(len_bytes, 1, 4, ctx->file);
-        *length = ((uint32_t)len_bytes[0] << 24) | ((uint32_t)len_bytes[1] << 16) |
-                  ((uint32_t)len_bytes[2] << 8) | len_bytes[3];
+        if (fread(len_bytes, 1, sizeof(len_bytes), ctx->file) != sizeof(len_bytes)) return -1;
+        *length = read_u32_value(len_bytes, ctx->big_endian);
     } else {
-        *length = ((uint16_t)tag_bytes[6] << 8) | tag_bytes[7];
+        *length = read_u16_value(header + 6, ctx->big_endian);
     }
     
     if (*length == 0xFFFFFFFF) {
@@ -137,13 +308,22 @@ static int read_explicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint8_t* 
         return -1;
     }
     
-    if (*length > 0 && *length < 0xFFFFFFFF) {
+    if (*length > 0 && *length < 0xFFFFFFFF && *length <= MAX_ELEMENT_SIZE) {
         *data = (uint8_t*)malloc(*length);
         if (*data) {
-            fread(*data, 1, *length, ctx->file);
+            if (fread(*data, 1, *length, ctx->file) != *length) {
+                free(*data);
+                *data = nullptr;
+                return -1;
+            }
         }
     } else {
         *data = nullptr;
+        if (*length > MAX_ELEMENT_SIZE) {
+            if (fseek(ctx->file, static_cast<long>(*length), SEEK_CUR) != 0) {
+                return -1;
+            }
+        }
     }
     return 0;
 }
@@ -152,18 +332,31 @@ static int read_implicit_vr_element(DICOM_Context* ctx, uint32_t* tag, uint32_t*
     uint8_t tag_bytes[8];
     if (fread(tag_bytes, 1, 8, ctx->file) != 8) return -1;
     
-    *tag = ((uint32_t)tag_bytes[0] << 24) | ((uint32_t)tag_bytes[1] << 16) |
-           ((uint32_t)tag_bytes[2] << 8) | tag_bytes[3];
-    *length = ((uint32_t)tag_bytes[4] << 24) | ((uint32_t)tag_bytes[5] << 16) |
-              ((uint32_t)tag_bytes[6] << 8) | tag_bytes[7];
+    const uint16_t group = read_u16_value(tag_bytes, ctx->big_endian);
+    const uint16_t element = read_u16_value(tag_bytes + 2, ctx->big_endian);
+    *tag = make_tag(group, element);
+    *length = read_u32_value(tag_bytes + 4, ctx->big_endian);
     
-    if (*length > 0 && *length < 0xFFFFFFFF) {
+    if (*length == 0xFFFFFFFF) {
+        return -1;
+    }
+
+    if (*length > 0 && *length <= MAX_ELEMENT_SIZE) {
         *data = (uint8_t*)malloc(*length);
         if (*data) {
-            fread(*data, 1, *length, ctx->file);
+            if (fread(*data, 1, *length, ctx->file) != *length) {
+                free(*data);
+                *data = nullptr;
+                return -1;
+            }
         }
     } else {
         *data = nullptr;
+        if (*length > MAX_ELEMENT_SIZE) {
+            if (fseek(ctx->file, static_cast<long>(*length), SEEK_CUR) != 0) {
+                return -1;
+            }
+        }
     }
     return 0;
 }
@@ -212,6 +405,58 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
             rewind(ctx->file);
         }
     }
+
+    // File Meta Information (0002,eeee) 总是 Explicit VR Little Endian
+    // 先单独读取 Transfer Syntax，再切回数据集自己的 VR/字节序
+    {
+        long meta_start = ftell(ctx->file);
+        while (!feof(ctx->file)) {
+            const long element_start = ftell(ctx->file);
+            uint32_t tag = 0;
+            uint32_t length = 0;
+            uint8_t* data = nullptr;
+            uint8_t vr[2] = {0, 0};
+
+            const bool saved_implicit = ctx->implicit_vr;
+            const bool saved_big_endian = ctx->big_endian;
+            ctx->implicit_vr = false;
+            ctx->big_endian = false;
+            const int rc = read_explicit_vr_element(ctx, &tag, vr, &length, &data);
+            ctx->implicit_vr = saved_implicit;
+            ctx->big_endian = saved_big_endian;
+
+            if (rc != 0) {
+                if (data) free(data);
+                fseek(ctx->file, meta_start, SEEK_SET);
+                break;
+            }
+
+            const uint16_t group = static_cast<uint16_t>(tag >> 16);
+            if (group != 0x0002) {
+                if (data) free(data);
+                fseek(ctx->file, element_start, SEEK_SET);
+                break;
+            }
+
+            const uint16_t element = static_cast<uint16_t>(tag & 0xFFFF);
+            if (element == 0x0010 && data && length > 0) {
+                std::string ts_uid = parse_string_ascii(data, length);
+                DICOM_TransferSyntax syntax = ctx->transfer_syntax;
+                bool implicit = ctx->implicit_vr;
+                bool big_endian = ctx->big_endian;
+                if (map_transfer_syntax_uid(ts_uid.c_str(), &syntax, &implicit, &big_endian)) {
+                    ctx->transfer_syntax = syntax;
+                    ctx->implicit_vr = implicit;
+                    ctx->big_endian = big_endian;
+                    ctx->encapsulated_pixel_data = is_encapsulated_transfer_syntax(syntax);
+                }
+            }
+
+            if (data) {
+                free(data);
+            }
+        }
+    }
     
     // Parse elements until we hit pixel data or end of file
     while (!feof(ctx->file)) {
@@ -225,10 +470,18 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
             if (read_explicit_vr_element(ctx, &tag, vr, &length, &data) != 0) break;
         }
         
-        if (tag == 0x7FE00010) {
+        if (tag == DICOM_TAG_PIXEL_DATA) {
             // Pixel Data - store offset and stop parsing
-            ctx->pixel_data_offset = ftell(ctx->file);
+            const long current_pos = ftell(ctx->file);
+            if (current_pos >= 0 && length <= static_cast<uint32_t>(current_pos)) {
+                ctx->pixel_data_offset = static_cast<size_t>(current_pos - static_cast<long>(length));
+            }
             ctx->pixel_data_length = length;
+            if (data) {
+                ctx->pixel_buffer = data;
+                ctx->pixel_buffer_size = length;
+                data = nullptr;
+            }
             if (data) free(data);
             break;
         }
@@ -252,7 +505,18 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
         uint16_t element = tag & 0xFFFF;
         
         if (group == 0x0008 && length > 0 && data) {
-            if (element == 0x0060) { // Modality
+            if (element == 0x0010 || element == 0x0012) {
+                std::string ts_uid = parse_string_ascii(data, length);
+                DICOM_TransferSyntax syntax = ctx->transfer_syntax;
+                bool implicit = ctx->implicit_vr;
+                bool big_endian = ctx->big_endian;
+                if (map_transfer_syntax_uid(ts_uid.c_str(), &syntax, &implicit, &big_endian)) {
+                    ctx->transfer_syntax = syntax;
+                    ctx->implicit_vr = implicit;
+                    ctx->big_endian = big_endian;
+                    ctx->encapsulated_pixel_data = is_encapsulated_transfer_syntax(syntax);
+                }
+            } else if (element == 0x0060) { // Modality
                 strncpy(ctx->modality, (char*)data, length < 15 ? length : 15);
                 ctx->modality[length < 15 ? length : 15] = '\0';
             } else if (element == 0x0060 && ctx->modality[0] == '\0') {
@@ -261,28 +525,21 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
             }
         }
         else if (group == 0x0028 && length > 0 && data) {
-            if (element == 0x0100) ctx->bits_allocated = data[0] << 8 | data[1];
-            else if (element == 0x0101) ctx->bits_stored = data[0] << 8 | data[1];
-            else if (element == 0x0102) ctx->high_bit = data[0] << 8 | data[1];
-            else if (element == 0x0103) ctx->pixel_representation = data[0] << 8 | data[1];
-            else if (element == 0x0002) ctx->samples_per_pixel = data[0] << 8 | data[1];
-            else if (element == 0x0010) ctx->rows = data[0] << 8 | data[1];
-            else if (element == 0x0011) ctx->columns = data[0] << 8 | data[1];
-            else if (element == 0x0008) ctx->number_of_frames = data[0] << 8 | data[1];
+            if (element == 0x0100 && length >= 2) ctx->bits_allocated = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0101 && length >= 2) ctx->bits_stored = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0102 && length >= 2) ctx->high_bit = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0103 && length >= 2) ctx->pixel_representation = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0002 && length >= 2) ctx->samples_per_pixel = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0010 && length >= 2) ctx->rows = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0011 && length >= 2) ctx->columns = read_u16_value(data, ctx->big_endian);
+            else if (element == 0x0008) ctx->number_of_frames = static_cast<int>(parse_float_ascii(data, length, 1.0f));
             else if (element == 0x1050 && length >= 4) { // Window Center
-                // [P0-FIX] data 可能不是 NUL 终止的，需要复制到临时缓冲区
-                char temp_buf[32];
-                size_t copy_len = length < sizeof(temp_buf) - 1 ? length : sizeof(temp_buf) - 1;
-                memcpy(temp_buf, data, copy_len);
-                temp_buf[copy_len] = '\0';
-                ctx->window_center = atof(temp_buf);
+                ctx->window_center = parse_float_ascii(data, length, ctx->window_center);
             } else if (element == 0x1051 && length >= 4) { // Window Width
-                // [P0-FIX] data 可能不是 NUL 终止的，需要复制到临时缓冲区
-                char temp_buf[32];
-                size_t copy_len = length < sizeof(temp_buf) - 1 ? length : sizeof(temp_buf) - 1;
-                memcpy(temp_buf, data, copy_len);
-                temp_buf[copy_len] = '\0';
-                ctx->window_width = atof(temp_buf);
+                ctx->window_width = parse_float_ascii(data, length, ctx->window_width);
+            } else if (element == 0x0004) {
+                std::string photometric = parse_string_ascii(data, length);
+                (void)photometric;
             }
         }
         else if (group == 0x0020 && length > 0 && data) {
@@ -293,6 +550,18 @@ static void parse_dicom_metadata(DICOM_Context* ctx) {
     }
     
     ctx->metadata_parsed = true;
+    if (ctx->bits_allocated <= 0) ctx->bits_allocated = 16;
+    if (ctx->bits_stored <= 0) ctx->bits_stored = 12;
+    if (ctx->high_bit <= 0) ctx->high_bit = ctx->bits_stored - 1;
+    if (ctx->samples_per_pixel <= 0) ctx->samples_per_pixel = 1;
+    if (ctx->rows <= 0) ctx->rows = 512;
+    if (ctx->columns <= 0) ctx->columns = 512;
+    if (ctx->number_of_frames <= 0) ctx->number_of_frames = 1;
+    if (ctx->window_center == 0.0f) ctx->window_center = 40.0f;
+    if (ctx->window_width == 0.0f) ctx->window_width = 400.0f;
+    if (ctx->rescale_slope == 0.0f) ctx->rescale_slope = 1.0f;
+    if (ctx->rescale_intercept == 0.0f) ctx->rescale_intercept = -1024.0f;
+    if (ctx->modality[0] == '\0') std::strcpy(ctx->modality, "OT");
 }
 
 // ============================================================================
@@ -451,6 +720,9 @@ void dicom_close(DICOM_Dataset dataset) {
 DICOM_TransferSyntax dicom_get_transfer_syntax(DICOM_Dataset dataset) {
     if (!dataset) return DICOM_TRANSFER_IMPLICIT_VR_LITTLE_ENDIAN;
     auto* ctx = static_cast<DICOM_Context*>(dataset);
+    if (!ctx->metadata_parsed) {
+        parse_dicom_metadata(ctx);
+    }
     return ctx->transfer_syntax;
 }
 
@@ -550,7 +822,7 @@ int dicom_read_uint16(DICOM_Dataset dataset, uint32_t tag, uint16_t* value) {
     
     DICOM_Element* elem = find_metadata_element(ctx, tag);
     if (elem && elem->data && elem->length >= 2) {
-        *value = (uint16_t)(elem->data[0] << 8 | elem->data[1]);
+        *value = read_u16_value(elem->data, ctx->big_endian);
         return 0;
     }
     
@@ -569,8 +841,7 @@ int dicom_read_uint32(DICOM_Dataset dataset, uint32_t tag, uint32_t* value) {
     
     DICOM_Element* elem = find_metadata_element(ctx, tag);
     if (elem && elem->data && elem->length >= 4) {
-        *value = ((uint32_t)elem->data[0] << 24) | ((uint32_t)elem->data[1] << 16) |
-                 ((uint32_t)elem->data[2] << 8) | elem->data[3];
+        *value = read_u32_value(elem->data, ctx->big_endian);
         return 0;
     }
     
@@ -589,8 +860,7 @@ int dicom_read_float(DICOM_Dataset dataset, uint32_t tag, float* value) {
     
     DICOM_Element* elem = find_metadata_element(ctx, tag);
     if (elem && elem->data && elem->length >= 4) {
-        uint32_t bits = ((uint32_t)elem->data[0] << 24) | ((uint32_t)elem->data[1] << 16) |
-                        ((uint32_t)elem->data[2] << 8) | elem->data[3];
+        uint32_t bits = read_u32_value(elem->data, ctx->big_endian);
         memcpy(value, &bits, sizeof(float));  // [P0-FIX] 安全的 float 转换
         return 0;
     }
@@ -645,34 +915,10 @@ void dicom_read_window_level(DICOM_Dataset dataset, float* center, float* width)
 
 static __attribute__((unused)) int decode_rle(DICOM_Context* ctx, const uint8_t* compressed, size_t comp_size,
                       uint8_t* decompressed, size_t decomp_size) {
-    (void)ctx; (void)compressed; (void)comp_size; (void)decompressed; (void)decomp_size;
-    size_t src_pos = 0;
-    size_t dst_pos = 0;
-    
-    while (src_pos < comp_size && dst_pos < decomp_size) {
-        uint8_t header = compressed[src_pos++];
-        
-        if (header == 128) {
-            // End of segment
-            break;
-        } else if (header < 128) {
-            // Copy literal
-            size_t count = header + 1;
-            if (dst_pos + count > decomp_size) break;
-            memcpy(decompressed + dst_pos, compressed + src_pos, count);
-            src_pos += count;
-            dst_pos += count;
-        } else {
-            // Repeat
-            size_t count = 257 - header;
-            if (dst_pos + count > decomp_size) break;
-            uint8_t value = compressed[src_pos++];
-            memset(decompressed + dst_pos, value, count);
-            dst_pos += count;
-        }
-    }
-    
-    return (int)dst_pos;
+    if (!ctx || !compressed || !decompressed) return -1;
+    return decode_rle_frame(compressed, comp_size, ctx->rows, ctx->columns,
+                            ctx->samples_per_pixel, ctx->bits_allocated,
+                            decompressed, decomp_size);
 }
 
 static __attribute__((unused)) int decode_jpeg_baseline(DICOM_Context* ctx, const uint8_t* compressed, 
@@ -693,21 +939,70 @@ int dicom_read_pixels(DICOM_Dataset dataset, DICOM_PixelData* pixel_info) {
     if (!dataset || !pixel_info) return -1;
     
     auto* ctx = static_cast<DICOM_Context*>(dataset);
-    (void)ctx; // ctx reserved for future parsing
-    // In real implementation, would parse pixel data element
-    
+    if (!ctx->metadata_parsed) {
+        parse_dicom_metadata(ctx);
+    }
+
     memset(pixel_info, 0, sizeof(DICOM_PixelData));
-    
-    // Return placeholder data
-    pixel_info->rows = 512;
-    pixel_info->columns = 512;
-    pixel_info->bits_allocated = 16;
-    pixel_info->bits_stored = 12;
-    pixel_info->high_bit = 11;
-    pixel_info->pixel_representation = 1;  // Signed
-    pixel_info->samples_per_pixel = 1;
+
+    pixel_info->rows = ctx->rows > 0 ? static_cast<uint32_t>(ctx->rows) : 512u;
+    pixel_info->columns = ctx->columns > 0 ? static_cast<uint32_t>(ctx->columns) : 512u;
+    pixel_info->bits_allocated = ctx->bits_allocated > 0 ? static_cast<uint32_t>(ctx->bits_allocated) : 16u;
+    pixel_info->bits_stored = ctx->bits_stored > 0 ? static_cast<uint32_t>(ctx->bits_stored) : 12u;
+    pixel_info->high_bit = ctx->high_bit >= 0 ? static_cast<uint32_t>(ctx->high_bit) : (pixel_info->bits_stored - 1u);
+    pixel_info->pixel_representation = ctx->pixel_representation > 0 ? 1u : 0u;
+    pixel_info->samples_per_pixel = ctx->samples_per_pixel > 0 ? static_cast<uint32_t>(ctx->samples_per_pixel) : 1u;
     pixel_info->photometric_interp = "MONOCHROME2";
-    
+
+    if (ctx->pixel_data_length == 0 || ctx->pixel_data_length > MAX_PIXEL_DATA_SIZE) {
+        return 0;
+    }
+
+    if (!ctx->pixel_buffer) {
+        if (ctx->pixel_data_offset == 0) {
+            return -1;
+        }
+        ctx->pixel_buffer = static_cast<uint8_t*>(malloc(ctx->pixel_data_length));
+        if (!ctx->pixel_buffer) {
+            return -1;
+        }
+
+        if (fseek(ctx->file, static_cast<long>(ctx->pixel_data_offset), SEEK_SET) != 0) {
+            free(ctx->pixel_buffer);
+            ctx->pixel_buffer = nullptr;
+            return -1;
+        }
+
+        if (fread(ctx->pixel_buffer, 1, ctx->pixel_data_length, ctx->file) != ctx->pixel_data_length) {
+            free(ctx->pixel_buffer);
+            ctx->pixel_buffer = nullptr;
+            return -1;
+        }
+
+        ctx->pixel_buffer_size = ctx->pixel_data_length;
+    }
+
+    if (ctx->transfer_syntax == DICOM_TRANSFER_RLE_LOSSLESS) {
+        const size_t decoded_size = static_cast<size_t>(pixel_info->rows) *
+                                    static_cast<size_t>(pixel_info->columns) *
+                                    static_cast<size_t>(pixel_info->samples_per_pixel) *
+                                    static_cast<size_t>(pixel_info->bits_allocated <= 8 ? 1 : 2);
+        uint8_t* decoded = static_cast<uint8_t*>(malloc(decoded_size));
+        if (!decoded) return -1;
+        if (decode_rle(ctx, ctx->pixel_buffer, ctx->pixel_buffer_size, decoded, decoded_size) != 0) {
+            free(decoded);
+            return -1;
+        }
+        free(ctx->pixel_buffer);
+        ctx->pixel_buffer = decoded;
+        ctx->pixel_buffer_size = decoded_size;
+        ctx->transfer_syntax = DICOM_TRANSFER_EXPLICIT_VR_LITTLE_ENDIAN;
+        ctx->encapsulated_pixel_data = false;
+    }
+
+    pixel_info->pixel_data = ctx->pixel_buffer;
+    pixel_info->pixel_data_size = ctx->pixel_buffer_size;
+
     return 0;
 }
 
@@ -769,12 +1064,13 @@ void dicom_extract_metadata(DICOM_Dataset dataset, DICOM_Metadata* metadata) {
         parse_dicom_metadata(ctx);
     }
 
-    // Set default values
+    memset(metadata, 0, sizeof(*metadata));
     strcpy(metadata->modality, ctx->modality[0] ? ctx->modality : "OT");
-    metadata->rescale_slope = 1.0f;
-    metadata->rescale_intercept = -1024.0f;
-    metadata->window_center = 40.0f;
-    metadata->window_width = 400.0f;
+    metadata->rescale_slope = ctx->rescale_slope != 0.0f ? ctx->rescale_slope : 1.0f;
+    metadata->rescale_intercept = ctx->rescale_intercept != 0.0f ? ctx->rescale_intercept : -1024.0f;
+    metadata->window_center = ctx->window_center > 0.0f ? ctx->window_center : 40.0f;
+    metadata->window_width = ctx->window_width > 0.0f ? ctx->window_width : 400.0f;
+    metadata->number_of_frames = ctx->number_of_frames > 0 ? ctx->number_of_frames : 1;
     metadata->body_part[0] = '\0';
 }
 
@@ -793,18 +1089,46 @@ bool dicom_needs_inversion(DICOM_Dataset dataset) {
 
 int dicom_get_frame_count(DICOM_Dataset dataset) {
     if (!dataset) return 0;
-    
-    // Would check NumberOfFrames tag
-    return 1;
+
+    auto* ctx = static_cast<DICOM_Context*>(dataset);
+    if (!ctx->metadata_parsed) {
+        parse_dicom_metadata(ctx);
+    }
+    return ctx->number_of_frames > 0 ? ctx->number_of_frames : 1;
 }
 
 int dicom_read_frame(DICOM_Dataset dataset, int frame_index, DICOM_PixelData* pixel_info) {
     if (!dataset || !pixel_info) return -1;
-    
-    if (frame_index != 0) {
-        // Only support single frame for now
+
+    auto* ctx = static_cast<DICOM_Context*>(dataset);
+    if (!ctx->metadata_parsed) {
+        parse_dicom_metadata(ctx);
+    }
+
+    const int frame_count = dicom_get_frame_count(dataset);
+    if (frame_index < 0 || frame_index >= frame_count) {
         return -1;
     }
-    
-    return dicom_read_pixels(dataset, pixel_info);
+
+    if (dicom_read_pixels(dataset, pixel_info) != 0) {
+        return -1;
+    }
+
+    if (!pixel_info->pixel_data || frame_count <= 1) {
+        return 0;
+    }
+
+    const size_t bytes_per_sample = pixel_info->bits_allocated <= 8 ? 1u : 2u;
+    const size_t frame_bytes = static_cast<size_t>(pixel_info->rows) *
+                               static_cast<size_t>(pixel_info->columns) *
+                               static_cast<size_t>(pixel_info->samples_per_pixel) *
+                               bytes_per_sample;
+    const size_t offset = frame_bytes * static_cast<size_t>(frame_index);
+    if (offset + frame_bytes > pixel_info->pixel_data_size) {
+        return -1;
+    }
+
+    pixel_info->pixel_data = static_cast<const uint8_t*>(pixel_info->pixel_data) + offset;
+    pixel_info->pixel_data_size = frame_bytes;
+    return 0;
 }

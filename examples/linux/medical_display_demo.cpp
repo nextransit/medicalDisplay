@@ -1,4 +1,5 @@
 #include "demo_support.h"
+#include "ai_engine.h"
 
 #include <algorithm>
 #include <chrono>
@@ -112,6 +113,16 @@ int main(int argc, char* argv[]) {
                   << " 尺寸: " << seed_image.width << "x" << seed_image.height
                   << " bits=" << seed_image.bits_stored << '\n';
 
+        AIEngineConfig ai_config{};
+        ai_config.input_width = std::max(64, seed_image.width);
+        ai_config.input_height = std::max(64, seed_image.height);
+        AIEngine* ai_engine = ai_engine_create(&ai_config);
+        if (!ai_engine) {
+            throw std::runtime_error("AIEngine 初始化失败");
+        }
+        const char* backend_name = ai_engine_backend_status_name(ai_engine_get_backend_status(ai_engine));
+        std::cout << "AI backend: " << backend_name << '\n';
+
         const auto wall_begin = std::chrono::steady_clock::now();
         for (int frame_index = 0; frame_index < options.frames; ++frame_index) {
             DicomImage frame = options.input_path.empty()
@@ -159,10 +170,13 @@ int main(int argc, char* argv[]) {
         summary_file << "generated_at=" << medicaldemo::now_local_string() << '\n';
         summary_file << "frames=" << options.frames << '\n';
         summary_file << "modality=" << seed_image.modality << '\n';
+        summary_file << "ai_backend=" << backend_name << '\n';
         summary_file << "bytes_written=" << bytes_written << '\n';
         summary_file << "inference_avg_ms=" << inference_summary.avg_ms << '\n';
         summary_file << "render_avg_ms=" << render_summary.avg_ms << '\n';
         summary_file << "fps=" << render_summary.fps << '\n';
+
+        ai_engine_destroy(ai_engine);
 
         return 0;
     } catch (const std::exception& ex) {
