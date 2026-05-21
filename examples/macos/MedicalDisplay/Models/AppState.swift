@@ -30,6 +30,13 @@ class AppState: ObservableObject {
         currentImagePath = url.path
     }
 
+    func loadDicom(from url: URL) {
+        // DICOM 解析 - 使用 SDK
+        // TODO: 集成 SDK dicom_reader
+        // 目前先作为普通图像处理
+        loadImage(from: url)
+    }
+
     private func processImage(at path: String?) {
         guard let path = path else { return }
 

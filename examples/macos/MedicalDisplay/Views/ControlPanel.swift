@@ -43,17 +43,19 @@ struct ControlPanel: View {
 
     func openImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image, .png, .jpeg, .tiff]
-        if panel.runModal() == .OK {
-            appState.currentImagePath = panel.url?.path
+        panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .dicom]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.loadImage(from: url)
         }
     }
 
     func openDicom() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.data]
-        if panel.runModal() == .OK {
-            appState.currentImagePath = panel.url?.path
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.loadDicom(from: url)
         }
     }
 }
