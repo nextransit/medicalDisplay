@@ -225,10 +225,10 @@ class MetalRenderer {
             saturation: appState.saturation,
             enableGsdf: appState.enableGsdf ? 1 : 0,
             enableBloodless: appState.enableBloodless ? 1 : 0,
-            bloodSuppress: 0.5,
-            tissueEnhance: 0.3,
-            enableSobel: 0,
-            sobelThreshold: 0.3,
+            bloodSuppress: appState.bloodSuppress,
+            tissueEnhance: appState.tissueEnhance,
+            enableSobel: appState.enableSobel ? 1 : 0,
+            sobelThreshold: appState.sobelThreshold,
             mode: 0
         )
 

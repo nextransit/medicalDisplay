@@ -66,6 +66,26 @@ struct ControlPanel: View {
             GroupBox("功能") {
                 Toggle("启用 GSDF", isOn: $appState.enableGsdf)
                 Toggle("无血术野增强", isOn: $appState.enableBloodless)
+                Toggle("Sobel 边缘检测", isOn: $appState.enableSobel)
+            }
+
+            // Sobel 边缘检测参数
+            GroupBox("边缘检测参数") {
+                VStack(alignment: .leading) {
+                    Text("阈值: \(String(format: "%.2f", appState.sobelThreshold))")
+                    Slider(value: $appState.sobelThreshold, in: 0.1...0.9)
+                }
+            }
+
+            // 无血术野增强参数
+            GroupBox("术野增强参数") {
+                VStack(alignment: .leading) {
+                    Text("血色抑制: \(String(format: "%.0f%%", appState.bloodSuppress * 100))")
+                    Slider(value: $appState.bloodSuppress, in: 0...1)
+
+                    Text("组织增强: \(String(format: "%.0f%%", appState.tissueEnhance * 100))")
+                    Slider(value: $appState.tissueEnhance, in: 0...1)
+                }
             }
 
             Spacer()

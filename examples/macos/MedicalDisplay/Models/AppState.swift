@@ -10,6 +10,10 @@ class AppState: ObservableObject {
     @Published var saturation: Float = 1.0
     @Published var enableGsdf: Bool = true
     @Published var enableBloodless: Bool = false
+    @Published var enableSobel: Bool = false
+    @Published var sobelThreshold: Float = 0.3
+    @Published var bloodSuppress: Float = 0.5
+    @Published var tissueEnhance: Float = 0.3
     @Published var isProcessing: Bool = false
     @Published var currentImagePath: String?
 
