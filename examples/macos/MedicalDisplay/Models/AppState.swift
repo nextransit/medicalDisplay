@@ -13,7 +13,13 @@ class AppState: ObservableObject {
     @Published var isProcessing: Bool = false
     @Published var currentImagePath: String?
 
+    // DICOM specific
+    @Published var windowCenter: Float = 40
+    @Published var windowWidth: Float = 400
+    @Published var dicomMetadata: DicomBridge.Metadata?
+
     let aiEngine = AIEngineBridge()
+    let dicomBridge = DicomBridge()
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -28,13 +34,36 @@ class AppState: ObservableObject {
 
     func loadImage(from url: URL) {
         currentImagePath = url.path
+        dicomMetadata = nil
     }
 
     func loadDicom(from url: URL) {
-        // DICOM 解析 - 使用 SDK
-        // TODO: 集成 SDK dicom_reader
-        // 目前先作为普通图像处理
-        loadImage(from: url)
+        isProcessing = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            // 使用 DicomBridge 读取元数据
+            if let metadata = self.dicomBridge.readMetadata(from: url) {
+                DispatchQueue.main.async {
+                    self.dicomMetadata = metadata
+                    self.currentModality = metadata.modality
+                    self.windowCenter = metadata.windowCenter
+                    self.windowWidth = metadata.windowWidth
+                    self.currentImagePath = url.path
+                    self.applyRecommendedParams(for: metadata.modality)
+                }
+            } else {
+                // 回退到普通图像处理
+                DispatchQueue.main.async {
+                    self.loadImage(from: url)
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.isProcessing = false
+            }
+        }
     }
 
     private func processImage(at path: String?) {
@@ -91,18 +120,28 @@ class AppState: ObservableObject {
         case "CT":
             brightness = 0.05
             contrast = 1.15
+            windowCenter = 40
+            windowWidth = 400
         case "MRI":
             brightness = 0.1
             contrast = 1.2
+            windowCenter = 127
+            windowWidth = 256
         case "XRay":
             brightness = 0.0
             contrast = 1.1
+            windowCenter = 2000
+            windowWidth = 4000
         case "Ultrasound":
             brightness = 0.15
             contrast = 1.0
+            windowCenter = 50
+            windowWidth = 200
         case "PET":
             brightness = 0.2
             contrast = 1.3
+            windowCenter = 150
+            windowWidth = 500
         default:
             break
         }
