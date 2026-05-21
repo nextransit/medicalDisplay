@@ -1,7 +1,23 @@
 import SwiftUI
 
+struct WindowPreset: Identifiable {
+    let id = UUID()
+    let name: String
+    let center: Float
+    let width: Float
+}
+
 struct ControlPanel: View {
     @ObservedObject var appState: AppState
+
+    let windowPresets: [WindowPreset] = [
+        WindowPreset(name: "CT 骨", center: 300, width: 1500),
+        WindowPreset(name: "CT 肺", center: -600, width: 1600),
+        WindowPreset(name: "CT 软组织", center: 40, width: 400),
+        WindowPreset(name: "CT 脑", center: 40, width: 80),
+        WindowPreset(name: "MRI T1", center: 500, width: 1000),
+        WindowPreset(name: "MRI T2", center: 100, width: 2000),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -26,6 +42,23 @@ struct ControlPanel: View {
 
                     Text("饱和度: \(String(format: "%.2f", appState.saturation))")
                     Slider(value: $appState.saturation, in: 0...2.0)
+                }
+            }
+
+            // 窗口/级别预设
+            GroupBox("窗口预设") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("窗口中心: \(String(format: "%.0f", appState.windowCenter))")
+                    Text("窗口宽度: \(String(format: "%.0f", appState.windowWidth))")
+
+                    Divider()
+
+                    ForEach(windowPresets) { preset in
+                        Button(preset.name) {
+                            applyWindowPreset(preset)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             }
 
@@ -57,5 +90,10 @@ struct ControlPanel: View {
         if panel.runModal() == .OK, let url = panel.url {
             appState.loadDicom(from: url)
         }
+    }
+
+    func applyWindowPreset(_ preset: WindowPreset) {
+        appState.windowCenter = preset.center
+        appState.windowWidth = preset.width
     }
 }
