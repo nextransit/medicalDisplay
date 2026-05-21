@@ -14,6 +14,10 @@ struct ContentView: View {
                 RenderView(appState: appState)
                 StatusBar(appState: appState)
             }
+
+            // 右侧 AI 面板
+            AIPanel(appState: appState)
+                .frame(minWidth: 250, maxWidth: 300)
         }
     }
 }
