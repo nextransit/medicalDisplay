@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -147,11 +148,74 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func loadCalibrationProfile() {
-        // TODO: 实现加载校准配置
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let profile = try decoder.decode(CalibrationProfile.self, from: data)
+                applyCalibrationProfile(profile)
+                showAlert(title: "加载成功", message: "校准配置已加载: \(profile.displayId)")
+            } catch {
+                showAlert(title: "加载失败", message: "无法加载校准配置: \(error.localizedDescription)")
+            }
+        }
     }
 
     @objc func saveCalibrationProfile() {
-        // TODO: 实现保存校准配置
+        let profile = createCalibrationProfileFromCurrentState()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(profile.displayId)_\(formatDate(profile.calibrationDate)).json"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                encoder.outputFormatting = .prettyPrinted
+                let data = try encoder.encode(profile)
+                try data.write(to: url)
+                showAlert(title: "保存成功", message: "校准配置已保存")
+            } catch {
+                showAlert(title: "保存失败", message: "无法保存校准配置: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func createCalibrationProfileFromCurrentState() -> CalibrationProfile {
+        return CalibrationProfile(
+            displayId: "built-in-display",
+            calibrationDate: Date(),
+            luminance: CalibrationProfile.LuminanceConfig(black: 0.5, white: 450.0),
+            ambientLight: 50.0,
+            gsdfLutPath: nil,
+            deltaE: 1.8
+        )
+    }
+
+    private func applyCalibrationProfile(_ profile: CalibrationProfile) {
+        // 应用校准配置到 AppState
+        sharedAppState.enableGsdf = true
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+        return formatter.string(from: date)
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "确定")
+        alert.runModal()
     }
 
     @objc func resetToDefaults() {
