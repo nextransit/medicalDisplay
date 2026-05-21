@@ -17,6 +17,9 @@ class AppState: ObservableObject {
     @Published var windowCenter: Float = 40
     @Published var windowWidth: Float = 400
     @Published var dicomMetadata: DicomBridge.Metadata?
+    @Published var currentFrameIndex: Int = 0
+    @Published var totalFrames: Int = 1
+    @Published var isMultiFrameDicom: Bool = false
 
     let aiEngine = AIEngineBridge()
     let dicomBridge = DicomBridge()
@@ -145,5 +148,32 @@ class AppState: ObservableObject {
         default:
             break
         }
+    }
+
+    // MARK: - Frame Navigation
+
+    func nextFrame() {
+        if currentFrameIndex < totalFrames - 1 {
+            currentFrameIndex += 1
+            loadFrame(currentFrameIndex)
+        }
+    }
+
+    func previousFrame() {
+        if currentFrameIndex > 0 {
+            currentFrameIndex -= 1
+            loadFrame(currentFrameIndex)
+        }
+    }
+
+    func goToFrame(_ index: Int) {
+        guard index >= 0 && index < totalFrames else { return }
+        currentFrameIndex = index
+        loadFrame(currentFrameIndex)
+    }
+
+    private func loadFrame(_ index: Int) {
+        // TODO: 加载指定帧
+        // 需要集成 SDK 的 dicom_read_frame
     }
 }

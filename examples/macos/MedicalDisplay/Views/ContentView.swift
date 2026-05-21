@@ -12,6 +12,7 @@ struct ContentView: View {
             // 中间渲染区域
             VStack(spacing: 0) {
                 RenderView(appState: appState)
+                DicomNavigatorView(appState: appState)
                 StatusBar(appState: appState)
             }
 
