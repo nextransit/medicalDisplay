@@ -1,0 +1,82 @@
+name: MedicalDisplay
+options:
+  bundleIdPrefix: com.medicaldisplay
+  deploymentTarget:
+    macOS: "12.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    PRODUCT_NAME: MedicalDisplay
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "12.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  MedicalDisplay:
+    type: application
+    platform: macOS
+    sources:
+      - path: MedicalDisplay
+        excludes:
+          - "**/*.md"
+    settings:
+      base:
+        INFOPLIST_FILE: MedicalDisplay/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.medicaldisplay.app
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        METAL_LIBRARY_OUTPUT_DIR: "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)"
+    dependencies: []
+    info:
+      path: MedicalDisplay/Info.plist
+      properties:
+        CFBundleName: MedicalDisplay
+        CFBundleDisplayName: AI Medical Display
+        CFBundleIdentifier: com.medicaldisplay.app
+        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundlePackageType: APPL
+        CFBundleExecutable: MedicalDisplay
+        LSMinimumSystemVersion: "12.0"
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Image
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes:
+              - public.image
+              - public.png
+              - public.jpeg
+              - public.tiff
+          - CFBundleTypeName: DICOM
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes:
+              - public.data
+        NSHumanReadableCopyright: "Copyright 2026. All rights reserved."
+    entitlements:
+      path: MedicalDisplay/MedicalDisplay.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.files.user-selected.read-write: true
+
+schemes:
+  MedicalDisplay:
+    build:
+      targets:
+        MedicalDisplay: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
