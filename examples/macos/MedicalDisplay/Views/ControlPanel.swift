@@ -11,12 +11,30 @@ struct ControlPanel: View {
     @ObservedObject var appState: AppState
 
     let windowPresets: [WindowPreset] = [
+        // CT 预设
         WindowPreset(name: "CT 骨", center: 300, width: 1500),
         WindowPreset(name: "CT 肺", center: -600, width: 1600),
         WindowPreset(name: "CT 软组织", center: 40, width: 400),
         WindowPreset(name: "CT 脑", center: 40, width: 80),
+        WindowPreset(name: "CT 肝脏", center: 60, width: 150),
+        WindowPreset(name: "CT 脊柱", center: 350, width: 1200),
+        // MRI 预设
         WindowPreset(name: "MRI T1", center: 500, width: 1000),
         WindowPreset(name: "MRI T2", center: 100, width: 2000),
+        WindowPreset(name: "MRI FLAIR", center: 80, width: 150),
+        WindowPreset(name: "MRI PD", center: 100, width: 2500),
+        WindowPreset(name: "MRI STIR", center: 0, width: 2000),
+        // XRay 预设
+        WindowPreset(name: "XRay 胸部", center: 2000, width: 4000),
+        WindowPreset(name: "XRay 腹部", center: 1500, width: 3000),
+        WindowPreset(name: "XRay 骨骼", center: 3000, width: 6000),
+        // 超声预设
+        WindowPreset(name: "US 腹部", center: 50, width: 200),
+        WindowPreset(name: "US 心脏", center: 60, width: 150),
+        WindowPreset(name: "US 妇产科", center: 40, width: 180),
+        // PET 预设
+        WindowPreset(name: "PET 全身", center: 150, width: 500),
+        WindowPreset(name: "PET 脑", center: 80, width: 250),
     ]
 
     var body: some View {
@@ -53,12 +71,19 @@ struct ControlPanel: View {
 
                     Divider()
 
-                    ForEach(windowPresets) { preset in
-                        Button(preset.name) {
-                            applyWindowPreset(preset)
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
+                            ForEach(windowPresets) { preset in
+                                Button(preset.name) {
+                                    applyWindowPreset(preset)
+                                }
+                                .buttonStyle(.bordered)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity)
+                            }
                         }
-                        .buttonStyle(.bordered)
                     }
+                    .frame(maxHeight: 200)
                 }
             }
 
