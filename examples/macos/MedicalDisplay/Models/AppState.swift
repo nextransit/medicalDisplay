@@ -180,4 +180,123 @@ class AppState: ObservableObject {
         // TODO: 加载指定帧
         // 需要集成 SDK 的 dicom_read_frame
     }
+
+    // MARK: - Undo/Redo Support
+
+    struct ParamSnapshot: Codable {
+        var brightness: Float
+        var contrast: Float
+        var saturation: Float
+        var enableGsdf: Bool
+        var enableBloodless: Bool
+        var enableSobel: Bool
+        var sobelThreshold: Float
+        var bloodSuppress: Float
+        var tissueEnhance: Float
+        var windowCenter: Float
+        var windowWidth: Float
+    }
+
+    private var undoStack: [ParamSnapshot] = []
+    private var redoStack: [ParamSnapshot] = []
+    private let maxUndoLevels = 20
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    func saveSnapshot() {
+        let snapshot = ParamSnapshot(
+            brightness: brightness,
+            contrast: contrast,
+            saturation: saturation,
+            enableGsdf: enableGsdf,
+            enableBloodless: enableBloodless,
+            enableSobel: enableSobel,
+            sobelThreshold: sobelThreshold,
+            bloodSuppress: bloodSuppress,
+            tissueEnhance: tissueEnhance,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth
+        )
+        undoStack.append(snapshot)
+        if undoStack.count > maxUndoLevels {
+            undoStack.removeFirst()
+        }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let snapshot = undoStack.popLast() else { return }
+
+        // 保存当前状态到 redo
+        let current = ParamSnapshot(
+            brightness: brightness,
+            contrast: contrast,
+            saturation: saturation,
+            enableGsdf: enableGsdf,
+            enableBloodless: enableBloodless,
+            enableSobel: enableSobel,
+            sobelThreshold: sobelThreshold,
+            bloodSuppress: bloodSuppress,
+            tissueEnhance: tissueEnhance,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth
+        )
+        redoStack.append(current)
+
+        // 恢复快照
+        restoreSnapshot(snapshot)
+    }
+
+    func redo() {
+        guard let snapshot = redoStack.popLast() else { return }
+
+        // 保存当前状态到 undo
+        let current = ParamSnapshot(
+            brightness: brightness,
+            contrast: contrast,
+            saturation: saturation,
+            enableGsdf: enableGsdf,
+            enableBloodless: enableBloodless,
+            enableSobel: enableSobel,
+            sobelThreshold: sobelThreshold,
+            bloodSuppress: bloodSuppress,
+            tissueEnhance: tissueEnhance,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth
+        )
+        undoStack.append(current)
+
+        // 恢复快照
+        restoreSnapshot(snapshot)
+    }
+
+    func resetToDefaults() {
+        saveSnapshot()
+        brightness = 0.0
+        contrast = 1.0
+        saturation = 1.0
+        enableGsdf = true
+        enableBloodless = false
+        enableSobel = false
+        sobelThreshold = 0.3
+        bloodSuppress = 0.5
+        tissueEnhance = 0.3
+        windowCenter = 40
+        windowWidth = 400
+    }
+
+    private func restoreSnapshot(_ snapshot: ParamSnapshot) {
+        brightness = snapshot.brightness
+        contrast = snapshot.contrast
+        saturation = snapshot.saturation
+        enableGsdf = snapshot.enableGsdf
+        enableBloodless = snapshot.enableBloodless
+        enableSobel = snapshot.enableSobel
+        sobelThreshold = snapshot.sobelThreshold
+        bloodSuppress = snapshot.bloodSuppress
+        tissueEnhance = snapshot.tissueEnhance
+        windowCenter = snapshot.windowCenter
+        windowWidth = snapshot.windowWidth
+    }
 }

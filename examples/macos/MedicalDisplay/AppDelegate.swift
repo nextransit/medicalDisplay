@@ -71,6 +71,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "进入全屏", action: #selector(toggleFullScreen), keyEquivalent: "f"))
 
+        // Edit Menu
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "编辑")
+        editMenuItem.submenu = editMenu
+
+        editMenu.addItem(NSMenuItem(title: "撤销", action: #selector(undo), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "重做", action: #selector(redo), keyEquivalent: "Z"))
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(NSMenuItem(title: "重置参数", action: #selector(resetToDefaults), keyEquivalent: "r"))
+
         // Calibration Menu
         let calibMenuItem = NSMenuItem()
         mainMenu.addItem(calibMenuItem)
@@ -218,11 +229,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+    @objc func undo() {
+        sharedAppState.undo()
+    }
+
+    @objc func redo() {
+        sharedAppState.redo()
+    }
+
     @objc func resetToDefaults() {
-        sharedAppState.brightness = 0.0
-        sharedAppState.contrast = 1.0
-        sharedAppState.saturation = 1.0
-        sharedAppState.enableGsdf = true
+        sharedAppState.resetToDefaults()
     }
 
     @objc func showAbout() {
