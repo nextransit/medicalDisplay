@@ -10,10 +10,16 @@ struct ContentView: View {
                 .frame(minWidth: 280, maxWidth: 320)
 
             // 中间渲染区域
-            VStack(spacing: 0) {
-                RenderView(appState: appState)
-                DicomNavigatorView(appState: appState)
-                StatusBar(appState: appState)
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 0) {
+                    RenderView(appState: appState)
+                    DicomNavigatorView(appState: appState)
+                    StatusBar(appState: appState)
+                }
+
+                // 浮动调试面板
+                DebugConsoleView(appState: appState)
+                    .padding(8)
             }
 
             // 右侧 AI 面板
